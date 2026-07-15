@@ -2121,18 +2121,7 @@ function renderImport(el) {
       csv: csv,
       options: { dedupe: dedupe, defaults: defaults, dry_run: dryRun, source_file: 'upload' }
     }, 'POST').then(function(r) {
-      var errs = (r.errors || []).length;
-      var cls = errs ? 'medium' : (dryRun ? 'low' : 'low');
-
-      // Summary pills
-      var pills = [];
-      if (r.added > 0) pills.push('<span class="pill pill-ok">' + r.added + ' added</span>');
-      if (r.updated > 0) pills.push('<span class="pill pill-info">' + r.updated + ' updated</span>');
-      if (r.skipped_duplicate > 0) pills.push('<span class="pill pill-warn">' + r.skipped_duplicate + ' dup skipped</span>');
-      if (r.skipped_empty > 0) pills.push('<span class="pill pill-info">' + r.skipped_empty + ' empty skipped</span>');
-      if (errs > 0) pills.push('<span class="pill pill-err">' + errs + ' errors</span>');
-
-      // Column map display
+      // Column map display (built first \u2014 useful context whether this succeeded or not)
       var mapRows = Object.keys(r.map || {}).map(function(k) {
         var v = r.map[k];
         var vCls = (!v || v === '__ignore__') ? 'pill-warn' : 'pill-ok';
@@ -2144,10 +2133,80 @@ function renderImport(el) {
       var mapTable = '<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12px">Column mapping (click to expand)</summary>' +
                      '<table style="margin-top:6px;font-size:12px"><tbody>' + mapRows + '</tbody></table></details>';
 
+      // Hard stop: required columns didn't map to anything \u2014 refuse rather
+      // than silently write rows with blank critical fields.
+      if (r.ok === false) {
+        var missingList = (r.missing_required || []).map(function(c) { return '<span class="pill pill-err">' + escapeHtml(c) + '</span>'; }).join(' ');
+        var body0 = '<div style="color:#b91c1c;font-weight:600">✗ Data is incorrect — nothing was imported.</div>' +
+                    '<b>' + escapeHtml(r.error || 'Import failed') + '</b>' +
+                    (missingList ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + missingList + '</div>' : '') +
+                    mapTable;
+        $('imp-out').innerHTML = '<div class="alert high"><div class="sev">Cannot import</div><div class="msg">' + body0 + '</div></div>';
+        updateRunState();
+        return;
+      }
+
+      // Raw Blinkit Sales Report export — aggregated in-app, different shape
+      // of result than the normal column-mapped importer.
+      if (r.mode === 'blinkit_sales_report') {
+        var stats2 = r.blinkit_stats || {};
+        var pills2 = [];
+        if (r.added > 0) pills2.push('<span class="pill pill-ok">' + r.added + ' added</span>');
+        if (r.updated > 0) pills2.push('<span class="pill pill-info">' + r.updated + ' updated</span>');
+        if (r.skipped_duplicate > 0) pills2.push('<span class="pill pill-warn">' + r.skipped_duplicate + ' dup skipped</span>');
+        var newCities = r.auto_created_cities || [];
+        var newSkus = r.auto_created_skus || [];
+        newCities.forEach(function(c) {
+          pills2.push('<span class="pill pill-info">new city: ' + escapeHtml(c.name) + ' (' + escapeHtml(c.city_id) + ')</span>');
+        });
+        newSkus.forEach(function(s) {
+          pills2.push('<span class="pill pill-warn">new SKU: ' + escapeHtml(s.name || s.item_id) + ' (' + escapeHtml(s.sku_id) + ')</span>');
+        });
+        var hasNewMasterData = newCities.length || newSkus.length;
+
+        var status2 = '<div style="color:#15803d;font-weight:600">✓ Data mapped correctly.</div>';
+
+        var body2 = status2 +
+                    '<b>Detected a raw Blinkit Sales Report export — aggregated automatically</b>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + pills2.join(' ') + '</div>' +
+          '<div class="muted" style="font-size:11px;margin-top:6px">' +
+            (stats2.delivered || 0) + ' delivered orders → ' + (r.added + r.updated) + ' daily_sales row(s) · dedupe: ' + escapeHtml(r.dedupe_mode || 'skip') +
+          '</div>' +
+          (newCities.length ? '<div class="muted" style="font-size:11px;margin-top:6px">' + newCities.length + ' new city/cities not seen before were added to the cities tab automatically — double-check state/status.</div>' : '') +
+          (newSkus.length ? '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">' + newSkus.length + ' new SKU(s) not seen before were added to the skus tab automatically — COGS was left blank and needs to be entered manually before margin figures for these SKUs can be trusted.</div>' : '') +
+          (stats2.no_price_column ? '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">No price column found — revenue (value) is 0 for every row.</div>' : '');
+
+        $('imp-out').innerHTML = '<div class="alert ' + (newSkus.length ? 'medium' : 'low') + '"><div class="sev">' + (dryRun ? 'Preview' : 'Done') + '</div><div class="msg">' + body2 + '</div></div>';
+        updateRunState();
+        return;
+      }
+
+      var errs = (r.errors || []).length;
+      var rowWarns = r.row_warnings || {};
+      var rowWarnCount = Object.keys(rowWarns).length;
+      var cls = errs ? 'medium' : (rowWarnCount ? 'medium' : (dryRun ? 'low' : 'low'));
+
+      // Summary pills
+      var pills = [];
+      if (r.added > 0) pills.push('<span class="pill pill-ok">' + r.added + ' added</span>');
+      if (r.updated > 0) pills.push('<span class="pill pill-info">' + r.updated + ' updated</span>');
+      if (r.skipped_duplicate > 0) pills.push('<span class="pill pill-warn">' + r.skipped_duplicate + ' dup skipped</span>');
+      if (r.skipped_empty > 0) pills.push('<span class="pill pill-info">' + r.skipped_empty + ' empty skipped</span>');
+      if (errs > 0) pills.push('<span class="pill pill-err">' + errs + ' errors</span>');
+      Object.keys(rowWarns).forEach(function(c) {
+        pills.push('<span class="pill pill-warn">' + rowWarns[c] + ' row(s) missing "' + escapeHtml(c) + '"</span>');
+      });
+
+      var hasIssues = errs > 0 || rowWarnCount > 0;
+      var status = hasIssues
+        ? '<div style="color:#b45309;font-weight:600">✗ Some data did not map correctly — see details below.</div>'
+        : '<div style="color:#15803d;font-weight:600">✓ Data mapped correctly.</div>';
+
       var heading = dryRun ? 'Dry run complete' : 'Import complete';
-      var body = '<b>' + escapeHtml(heading) + '</b>' +
+      var body = status + '<b>' + escapeHtml(heading) + '</b>' +
                  '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + pills.join(' ') + '</div>' +
                  (r.total_rows ? '<div class="muted" style="font-size:11px;margin-top:4px">' + r.total_rows + ' rows processed \u00B7 dedupe: ' + escapeHtml(r.dedupe_mode || 'skip') + '</div>' : '') +
+                 (rowWarnCount ? '<div class="muted" style="font-size:11px;margin-top:4px">Some rows were written but are missing a value the dashboard needs \u2014 likely blank source cells or an ID (SKU/city) that didn\'t translate. Those rows won\'t show up correctly until fixed.</div>' : '') +
                  mapTable;
 
       if (errs > 0) {
