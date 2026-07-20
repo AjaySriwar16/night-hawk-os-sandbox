@@ -2594,11 +2594,17 @@ function renderImport(el) {
           (f.added + ' added, ' + f.updated + ' updated, ' + f.skipped_duplicate + ' dup skipped')) + '</div>' +
         (c ? '<div style="margin-top:4px"><b>cash_ledger:</b> ' + (c.ok === false ? escapeHtml(c.error || 'failed') :
           (c.added + ' added, ' + c.updated + ' updated, ' + c.skipped_duplicate + ' dup skipped')) + '</div>' : '');
-      $('imp-soa-result').innerHTML += '<div class="alert ' + (ok ? 'low' : 'high') + '" style="margin-top:10px"><div class="sev">' + (dryRun ? 'Preview' : 'Done') + '</div><div class="msg">' + body + '</div></div>';
+      // insertAdjacentHTML (not innerHTML +=) so the existing button node
+      // — whose .disabled/.textContent we're about to reset below — isn't
+      // destroyed and silently replaced by a fresh copy parsed from the
+      // old HTML string (which is what innerHTML += does to every child,
+      // including the button itself, since it re-serialises and
+      // re-parses the whole container).
+      $('imp-soa-result').insertAdjacentHTML('beforeend', '<div class="alert ' + (ok ? 'low' : 'high') + '" style="margin-top:10px"><div class="sev">' + (dryRun ? 'Preview' : 'Done') + '</div><div class="msg">' + body + '</div></div>');
       btn.disabled = false;
       btn.textContent = 'Import into the sheet';
     }).catch(function(e) {
-      $('imp-soa-result').innerHTML += '<div class="alert high" style="margin-top:10px"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message || e) + '</div></div>';
+      $('imp-soa-result').insertAdjacentHTML('beforeend', '<div class="alert high" style="margin-top:10px"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message || e) + '</div></div>');
       btn.disabled = false;
       btn.textContent = 'Import into the sheet';
     });
