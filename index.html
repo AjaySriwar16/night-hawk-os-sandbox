@@ -1840,12 +1840,451 @@ function wireDecisionForm(existing, parentEl) {
   });
 }
 
+// ============================================================
+// Blinkit Monthly SOA (Statement of Account) multi-file importer
+// ============================================================
+// Blinkit's monthly payout is exported as a folder of ~12 separate Excel
+// files (one per charge category: Payout Breakup, Forward Orders /
+// Cancelled or Returned Orders, Storage Charges, Lost Damaged, Courier
+// Charge, Recall Charge, Return Charges, CN-DN, TDS/TCS Reimbursement,
+// Pending Charges/Settlement Received). This block reads all of them in
+// the browser (SheetJS is already loaded for the single-file importer
+// above), classifies each SHEET it finds (not each file — some files
+// like "Forward & Return Cancelled Orders.xlsx" bundle two sheet types,
+// and some months split them into separate files instead — both
+// layouts work here since classification never looks at filenames),
+// extracts fields by HEADER NAME (not fixed column position, so minor
+// column reordering/renaming month to month doesn't break it), aggregates
+// everything into date-level rows, and hands the result to the exact same
+// api('importCsv', {target:'daily_fees'|'cash_ledger', ...}) pipeline the
+// rest of the app already uses — no backend changes, so nothing about
+// the existing single-file/paste-CSV import path is touched.
+//
+// Scaling to future months (August, September, ...): re-select that
+// month's folder — same code path, no changes needed, as long as
+// Blinkit keeps using the same sheet names / column headers (their fixed
+// export template). If a sheet's name or headers change enough that it
+// can't be recognised, that one file is skipped with a clear reason and
+// everything else still imports — see soaClassifySheet / the
+// per-file try/catch in soaAggregateFiles.
+
+var SOA_SHEET_TYPES = [
+  { type: 'forward_orders',     names: ['forward orders'] },
+  { type: 'cancelled_orders',   names: ['cancelled or returned orders', 'return orders'] },
+  { type: 'upfront_storage',    names: ['upfront storage charges'] },
+  { type: 'daily_ageing',       names: ['daily ageing'] },
+  { type: 'ageing_reversal',    names: ['ageing reversal'] },      // recognised, intentionally not extracted
+  { type: 'lost_damaged',       names: ['lost damaged inventory'] },
+  { type: 'courier_charge',     names: ['courier charge'] },
+  { type: 'recall_charge',      names: ['recall charge'] },
+  { type: 'return_charges',     names: ['return charges'] },
+  { type: 'cn_dn',              names: ['credit note-debit note', 'credit note - debit note'] },
+  { type: 'tds_reimbursement',  names: ['tds reimbursement'] },
+  { type: 'tcs_reimbursement',  names: ['tcs reimbursement'] },
+  { type: 'pending_settlement', names: ['settlement received'] },
+  { type: 'payout_breakup',     names: ['payout breakup'] },
+  { type: 'note',               names: ['note'] },                 // recognised, intentionally not extracted
+];
+// Fallback keyword groups — used only if no sheet in the workbook
+// matched exactly by name above. All keywords in a group must appear as
+// substrings of the (normalised) sheet name for it to count as a match.
+var SOA_SHEET_FALLBACK = [
+  { type: 'forward_orders',     any: [['forward', 'order']] },
+  { type: 'cancelled_orders',   any: [['cancel'], ['return', 'order']] },
+  { type: 'upfront_storage',    any: [['upfront', 'storage']] },
+  { type: 'daily_ageing',       any: [['daily', 'age']] },
+  { type: 'lost_damaged',       any: [['lost'], ['damag']] },
+  { type: 'courier_charge',     any: [['courier']] },
+  { type: 'recall_charge',      any: [['recall']] },
+  { type: 'return_charges',     any: [['return', 'charge']] },
+  { type: 'cn_dn',              any: [['credit', 'note'], ['debit', 'note']] },
+  { type: 'tds_reimbursement',  any: [['tds']] },
+  { type: 'tcs_reimbursement',  any: [['tcs']] },
+  { type: 'pending_settlement', any: [['settlement']] },
+  { type: 'payout_breakup',     any: [['payout']] },
+];
+
+function soaNormText_(s) { return String(s == null ? '' : s).toLowerCase().trim().replace(/\s+/g, ' '); }
+function soaNormHeader_(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+function soaClassifySheet_(sheetName) {
+  var norm = soaNormText_(sheetName);
+  for (var i = 0; i < SOA_SHEET_TYPES.length; i++) {
+    if (SOA_SHEET_TYPES[i].names.indexOf(norm) !== -1) return SOA_SHEET_TYPES[i].type;
+  }
+  for (var j = 0; j < SOA_SHEET_FALLBACK.length; j++) {
+    var groups = SOA_SHEET_FALLBACK[j].any;
+    for (var k = 0; k < groups.length; k++) {
+      if (groups[k].every(function(kw) { return norm.indexOf(kw) !== -1; })) return SOA_SHEET_FALLBACK[j].type;
+    }
+  }
+  return null; // unrecognised
+}
+
+// Finds the header row inside a 2D array of cell values (from
+// XLSX.utils.sheet_to_json(sheet, {header:1})) by locating the first row
+// where every group in `mustHaveAnyOf` has at least one matching
+// (normalised) header name present. Returns {headerRowIx, colIx} where
+// colIx maps normalised header name -> column index, or null if not found.
+function soaFindHeaderRow_(rows, mustHaveAnyOf, scanRows) {
+  scanRows = scanRows || 12;
+  for (var r = 0; r < Math.min(rows.length, scanRows); r++) {
+    var norm = (rows[r] || []).map(soaNormHeader_);
+    var hit = mustHaveAnyOf.every(function(candidates) {
+      return candidates.some(function(c) { return norm.indexOf(c) !== -1; });
+    });
+    if (hit) {
+      var colIx = {};
+      norm.forEach(function(n, i) { if (n && colIx[n] === undefined) colIx[n] = i; });
+      return { headerRowIx: r, colIx: colIx };
+    }
+  }
+  return null;
+}
+function soaCell_(row, colIx, candidates) {
+  for (var i = 0; i < candidates.length; i++) {
+    var ix = colIx[candidates[i]];
+    if (ix !== undefined && row[ix] !== undefined && row[ix] !== null && row[ix] !== '') return row[ix];
+  }
+  return '';
+}
+function soaNum_(v) {
+  if (v === '-' || v === '' || v == null) return 0;
+  var n = Number(String(v).replace(/,/g, ''));
+  return isFinite(n) ? n : 0;
+}
+// Blinkit SOA dates show up as real Date objects, Excel serial numbers, or
+// text like "1 July 2026" / "01-Jul-2026" / "2026-07-01" depending on the
+// sheet. Handles all of them; returns '' if unparseable (caller decides
+// what to do with an amount that has no usable date).
+var SOA_MONTHS_ = {january:1,february:2,march:3,april:4,may:5,june:6,july:7,august:8,september:9,october:10,november:11,december:12,
+  jan:1,feb:2,mar:3,apr:4,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12};
+function soaParseDate_(v) {
+  if (v == null || v === '' || v === '-') return '';
+  if (v instanceof Date) return fmtD(v);
+  if (typeof v === 'number') {
+    if (typeof XLSX !== 'undefined' && XLSX.SSF && XLSX.SSF.parse_date_code) {
+      var d = XLSX.SSF.parse_date_code(v);
+      if (d) return d.y + '-' + String(d.m).padStart(2, '0') + '-' + String(d.d).padStart(2, '0');
+    }
+    return '';
+  }
+  var s = String(v).trim();
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1] + '-' + m[2] + '-' + m[3];
+  var m2 = s.match(/^(\d{1,2})[\s-]+([A-Za-z]+)[\s-]+(\d{4})$/); // "1 July 2026" / "01-Jul-2026"
+  if (m2) {
+    var mo = SOA_MONTHS_[m2[2].toLowerCase()];
+    if (mo) return m2[3] + '-' + String(mo).padStart(2, '0') + '-' + String(parseInt(m2[1], 10)).padStart(2, '0');
+  }
+  var d2 = new Date(s);
+  if (!isNaN(d2.getTime())) return fmtD(d2);
+  return '';
+}
+function soaSheetRows_(sheet) {
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
+}
+function soaAddAmount_(bucketMap, date, field, amount, unassigned, sourceLabel) {
+  if (!amount) return;
+  if (!date) { unassigned.push({ source: sourceLabel, field: field, amount: amount }); return; }
+  if (!bucketMap[date]) bucketMap[date] = { storage_fee: 0, shipping_fee: 0, commission_fee: 0, tds: 0, lost_damaged: 0 };
+  bucketMap[date][field] += amount;
+}
+
+// ---- per-sheet-type extractors ----
+// Each takes (rows, dailyFees, unassigned, cashLedger, ctx) and mutates the
+// accumulators in place. `ctx` carries {fallbackDate} for the "no date on
+// this row" case (see soaAggregateFiles) so an amount is never silently
+// dropped, just clearly flagged.
+
+function soaExtractOrders_(rows, dailyFees, unassigned, sourceLabel) {
+  // Note: Blinkit's headers here are "Commission Charge (Rs)" / "Shipping
+  // Charge (Rs)" etc — the "(Rs)" survives normalisation as a trailing
+  // "rs", so both the with- and without-suffix forms are matched in case
+  // Blinkit drops the unit suffix in a future export.
+  var hdr = soaFindHeaderRow_(rows, [['orderdate', 'returnorderdate'], ['commissionchargers', 'commissioncharge']]);
+  if (!hdr) return 0;
+  var colIx = hdr.colIx, n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var date = soaParseDate_(soaCell_(row, colIx, ['orderdate', 'returnorderdate']));
+    var commission = soaNum_(soaCell_(row, colIx, ['commissionchargers', 'commissioncharge'])) + soaNum_(soaCell_(row, colIx, ['commissiongstrs', 'commissiongst']));
+    var shipping = soaNum_(soaCell_(row, colIx, ['shippingchargers', 'shippingcharge'])) + soaNum_(soaCell_(row, colIx, ['shippinggstrs', 'shippinggst']));
+    var tds = soaNum_(soaCell_(row, colIx, ['tds194oamount'])) + soaNum_(soaCell_(row, colIx, ['tds194qamount'])) + soaNum_(soaCell_(row, colIx, ['tcsamount']));
+    if (!commission && !shipping && !tds) continue;
+    soaAddAmount_(dailyFees, date, 'commission_fee', commission, unassigned, sourceLabel);
+    soaAddAmount_(dailyFees, date, 'shipping_fee', shipping, unassigned, sourceLabel);
+    soaAddAmount_(dailyFees, date, 'tds', tds, unassigned, sourceLabel);
+    n++;
+  }
+  return n;
+}
+function soaExtractUpfrontStorage_(rows, dailyFees, unassigned, sourceLabel) {
+  var hdr = soaFindHeaderRow_(rows, [['grndate'], ['totalchargers']]);
+  if (!hdr) return 0;
+  var colIx = hdr.colIx, n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var date = soaParseDate_(soaCell_(row, colIx, ['grndate']));
+    var amt = soaNum_(soaCell_(row, colIx, ['totalchargers']));
+    if (!amt) continue;
+    soaAddAmount_(dailyFees, date, 'storage_fee', amt, unassigned, sourceLabel);
+    n++;
+  }
+  return n;
+}
+function soaExtractDailyAgeing_(rows, dailyFees, unassigned, sourceLabel) {
+  var hdr = soaFindHeaderRow_(rows, [['ageingslab'], ['perdaychargers']]);
+  if (!hdr) return 0;
+  var colIx = hdr.colIx;
+  var perDayIx = colIx['perdaychargers'];
+  // Date columns are whatever other headers in this row parse as a date
+  // (e.g. "2026-07-01", "2026-07-02", ...). Read from the raw header row,
+  // not the normalised colIx map, since normalising a date string strips
+  // the punctuation needed to parse it back out.
+  var dateCols = [];
+  var rawHeader = rows[hdr.headerRowIx] || [];
+  rawHeader.forEach(function(cell, ix) {
+    var d = soaParseDate_(cell);
+    if (d) dateCols.push({ ix: ix, date: d });
+  });
+  if (!dateCols.length) return 0;
+  var n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var perDay = soaNum_(row[perDayIx]);
+    if (!perDay) continue;
+    dateCols.forEach(function(dc) {
+      var units = soaNum_(row[dc.ix]);
+      if (!units) return;
+      soaAddAmount_(dailyFees, dc.date, 'storage_fee', perDay * units, unassigned, sourceLabel);
+      n++;
+    });
+  }
+  return n;
+}
+function soaExtractLostDamaged_(rows, dailyFees, unassigned, sourceLabel) {
+  var hdr = soaFindHeaderRow_(rows, [['itemid'], ['applicablecompensationminoftwo']]);
+  if (!hdr) return 0;
+  var colIx = hdr.colIx, n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var date = soaParseDate_(soaCell_(row, colIx, ['settlementdate']));
+    var amt = soaNum_(soaCell_(row, colIx, ['totalcompensationamount'])) || soaNum_(soaCell_(row, colIx, ['applicablecompensationminoftwo']));
+    if (!amt) continue;
+    soaAddAmount_(dailyFees, date, 'lost_damaged', amt, unassigned, sourceLabel);
+    n++;
+  }
+  return n;
+}
+function soaExtractCourierOrRecall_(rows, dailyFees, unassigned, sourceLabel, dateCandidates, amountCandidates) {
+  var hdr = soaFindHeaderRow_(rows, [dateCandidates, amountCandidates]);
+  if (!hdr) return 0;
+  var colIx = hdr.colIx, n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var date = soaParseDate_(soaCell_(row, colIx, dateCandidates));
+    var amt = soaNum_(soaCell_(row, colIx, amountCandidates));
+    if (!amt) continue;
+    soaAddAmount_(dailyFees, date, 'shipping_fee', amt, unassigned, sourceLabel);
+    n++;
+  }
+  return n;
+}
+function soaExtractReturnCharges_(rows, dailyFees, unassigned, sourceLabel) {
+  var hdr = soaFindHeaderRow_(rows, [['returninvoicedate'], ['returncharge']]);
+  if (!hdr) return 0;
+  var colIx = hdr.colIx, n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var date = soaParseDate_(soaCell_(row, colIx, ['returninvoicedate']));
+    var amt = soaNum_(soaCell_(row, colIx, ['returncharge'])) + soaNum_(soaCell_(row, colIx, ['returnchargegst']));
+    if (!amt) continue;
+    soaAddAmount_(dailyFees, date, 'shipping_fee', amt, unassigned, sourceLabel);
+    n++;
+  }
+  return n;
+}
+function soaExtractCashLedgerSheet_(rows, cashLedger, sourceLabel, kind) {
+  var n = 0;
+  if (kind === 'cn_dn') {
+    var hdr = soaFindHeaderRow_(rows, [['cndnissuedate'], ['totalamount'], ['type']]);
+    if (!hdr) return 0;
+    var colIx = hdr.colIx;
+    for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+      var row = rows[r];
+      if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+      var date = soaParseDate_(soaCell_(row, colIx, ['cndnissuedate']));
+      var amt = soaNum_(soaCell_(row, colIx, ['totalamount']));
+      if (!date || !amt) continue;
+      var typ = String(soaCell_(row, colIx, ['type'])).toLowerCase();
+      cashLedger.push({
+        date: date, type: typ.indexOf('debit') !== -1 ? 'outflow' : 'inflow', amount: Math.abs(amt),
+        category: 'blinkit_cn_dn', notes: String(soaCell_(row, colIx, ['description'])) + ' (' + sourceLabel + ')',
+      });
+      n++;
+    }
+  } else if (kind === 'tds_reimbursement' || kind === 'tcs_reimbursement') {
+    var amtKey = kind === 'tds_reimbursement' ? 'tdsreimbursement' : 'tcsamountrefunded';
+    var hdr2 = soaFindHeaderRow_(rows, [['settlementdate'], [amtKey]]);
+    if (!hdr2) return 0;
+    var colIx2 = hdr2.colIx;
+    for (var r2 = hdr2.headerRowIx + 1; r2 < rows.length; r2++) {
+      var row2 = rows[r2];
+      if (!row2 || row2.every(function(c) { return c === '' || c == null; })) continue;
+      var date2 = soaParseDate_(soaCell_(row2, colIx2, ['settlementdate']));
+      var amt2 = soaNum_(soaCell_(row2, colIx2, [amtKey]));
+      if (!date2 || !amt2) continue;
+      cashLedger.push({
+        date: date2, type: 'inflow', amount: Math.abs(amt2),
+        category: kind === 'tds_reimbursement' ? 'blinkit_tds_reimbursement' : 'blinkit_tcs_reimbursement',
+        notes: 'From ' + sourceLabel,
+      });
+      n++;
+    }
+  } else if (kind === 'pending_settlement') {
+    var hdr3 = soaFindHeaderRow_(rows, [['date'], ['amountrs']]);
+    if (!hdr3) return 0;
+    var colIx3 = hdr3.colIx;
+    for (var r3 = hdr3.headerRowIx + 1; r3 < rows.length; r3++) {
+      var row3 = rows[r3];
+      if (!row3 || row3.every(function(c) { return c === '' || c == null; })) continue;
+      var date3 = soaParseDate_(soaCell_(row3, colIx3, ['date']));
+      var amt3 = soaNum_(soaCell_(row3, colIx3, ['amountrs']));
+      if (!date3 || !amt3) continue;
+      cashLedger.push({ date: date3, type: 'inflow', amount: Math.abs(amt3), category: 'blinkit_pending_settlement', notes: 'From ' + sourceLabel });
+      n++;
+    }
+  }
+  return n;
+}
+// Payout Breakup: not a normal table — row labels down a "Particular"
+// column, totals in a "Total" column. Used only as a monthly cross-check
+// total (informational), never written to the sheet directly.
+var SOA_PAYOUT_LABEL_BUCKETS_ = [
+  { re: /commission charge/i, bucket: 'commission_fee' },
+  { re: /gst on commission/i, bucket: 'commission_fee' },
+  { re: /^\s*shipping charge/i, bucket: 'shipping_fee' },
+  { re: /gst on shipping/i, bucket: 'shipping_fee' },
+  { re: /^\s*return charge/i, bucket: 'shipping_fee' },
+  { re: /gst on return charge/i, bucket: 'shipping_fee' },
+  { re: /courier charge/i, bucket: 'shipping_fee' },
+  { re: /^\s*recall charge/i, bucket: 'shipping_fee' },
+  { re: /gst on recall charge/i, bucket: 'shipping_fee' },
+  { re: /tcs charge/i, bucket: 'tds' },
+  { re: /tds charge/i, bucket: 'tds' },
+  { re: /storage charge/i, bucket: 'storage_fee' },
+  { re: /lost\/damaged inventory/i, bucket: 'lost_damaged' },
+];
+function soaExtractPayoutBreakup_(rows) {
+  var hdr = soaFindHeaderRow_(rows, [['particular'], ['total']]);
+  if (!hdr) return null;
+  var colIx = hdr.colIx;
+  var totals = { storage_fee: 0, shipping_fee: 0, commission_fee: 0, tds: 0, lost_damaged: 0 };
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row) continue;
+    var label = String(soaCell_(row, colIx, ['particular']) || '');
+    if (!label) continue;
+    var val = soaNum_(soaCell_(row, colIx, ['total']));
+    if (!val) continue;
+    for (var i = 0; i < SOA_PAYOUT_LABEL_BUCKETS_.length; i++) {
+      if (SOA_PAYOUT_LABEL_BUCKETS_[i].re.test(label)) { totals[SOA_PAYOUT_LABEL_BUCKETS_[i].bucket] += val; break; }
+    }
+  }
+  return totals;
+}
+
+// Main orchestrator. `files` is an array of {name, workbook} already
+// parsed by XLSX.read (parsing happens in the click handler so this stays
+// synchronous/pure and unit-testable). Returns a report + aggregated
+// output, and never throws — a bad sheet inside one file is caught and
+// logged per-sheet, a bad file is caught and logged per-file, and
+// everything else keeps processing.
+function soaAggregateFiles_(files) {
+  var dailyFees = {};
+  var unassigned = [];
+  var cashLedger = [];
+  var payoutBreakupTotals = null;
+  var fileReport = [];
+
+  files.forEach(function(f) {
+    if (f.error) { fileReport.push({ name: f.name, status: 'error', message: f.error }); return; }
+    var detected = [];
+    try {
+      var wb = f.workbook;
+      (wb.SheetNames || []).forEach(function(sheetName) {
+        var type = soaClassifySheet_(sheetName);
+        if (!type) return;
+        var label = f.name + ' → ' + sheetName;
+        try {
+          var rows = soaSheetRows_(wb.Sheets[sheetName]);
+          var n = 0;
+          if (type === 'forward_orders' || type === 'cancelled_orders') n = soaExtractOrders_(rows, dailyFees, unassigned, label);
+          else if (type === 'upfront_storage') n = soaExtractUpfrontStorage_(rows, dailyFees, unassigned, label);
+          else if (type === 'daily_ageing') n = soaExtractDailyAgeing_(rows, dailyFees, unassigned, label);
+          else if (type === 'lost_damaged') n = soaExtractLostDamaged_(rows, dailyFees, unassigned, label);
+          else if (type === 'courier_charge') n = soaExtractCourierOrRecall_(rows, dailyFees, unassigned, label, ['deliverydate'], ['amount']);
+          else if (type === 'recall_charge') n = soaExtractCourierOrRecall_(rows, dailyFees, unassigned, label, ['recalldispatchdate', 'recallrequesteddate'], ['totalchargers']);
+          else if (type === 'return_charges') n = soaExtractReturnCharges_(rows, dailyFees, unassigned, label);
+          else if (type === 'cn_dn' || type === 'tds_reimbursement' || type === 'tcs_reimbursement' || type === 'pending_settlement') n = soaExtractCashLedgerSheet_(rows, cashLedger, label, type);
+          else if (type === 'payout_breakup') {
+            if (!payoutBreakupTotals) payoutBreakupTotals = soaExtractPayoutBreakup_(rows);
+            n = payoutBreakupTotals ? 1 : 0;
+          }
+          // ageing_reversal / note: recognised, intentionally not extracted (n stays 0)
+          detected.push({ sheet: sheetName, type: type, rows: n });
+        } catch (sheetErr) {
+          detected.push({ sheet: sheetName, type: type, error: sheetErr.message || String(sheetErr) });
+        }
+      });
+      fileReport.push({ name: f.name, status: detected.length ? 'ok' : 'unrecognized', detected: detected });
+    } catch (fileErr) {
+      fileReport.push({ name: f.name, status: 'error', message: fileErr.message || String(fileErr) });
+    }
+  });
+
+  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, payoutBreakupTotals: payoutBreakupTotals, fileReport: fileReport };
+}
+
+function soaCsvField_(v) {
+  var s = String(v == null ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function soaDailyFeesToCsv_(dailyFees, platformId, sourceLabel) {
+  var dates = Object.keys(dailyFees).sort();
+  var lines = ['fee_id,date,platform_id,storage_fee,shipping_fee,commission_fee,tds,lost_damaged,source'];
+  var yyyymm = dates.length ? dates[0].slice(0, 7).replace('-', '') : Utilities_yyyymm_();
+  dates.forEach(function(d, i) {
+    var r = dailyFees[d];
+    lines.push(['DF-' + yyyymm + '-' + String(i + 1).padStart(4, '0'), d, platformId,
+      round2_(r.storage_fee), round2_(r.shipping_fee), round2_(r.commission_fee), round2_(r.tds), round2_(r.lost_damaged),
+      sourceLabel].map(soaCsvField_).join(','));
+  });
+  return { csv: lines.join('\n'), rowCount: dates.length };
+}
+function soaCashLedgerToCsv_(cashLedger, sourceLabel) {
+  var lines = ['entry_id,date,type,amount,category,notes'];
+  cashLedger.forEach(function(r, i) {
+    lines.push(['CSH-SOA-' + Date.now() + '-' + i, r.date, r.type, round2_(r.amount), r.category, r.notes || sourceLabel].map(soaCsvField_).join(','));
+  });
+  return { csv: lines.join('\n'), rowCount: cashLedger.length };
+}
+function round2_(n) { return Math.round((n || 0) * 100) / 100; }
+function Utilities_yyyymm_() { var d = new Date(); return d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0'); }
+
 function renderImport(el) {
   el.innerHTML =
     '<div class="panel"><h2>Import data</h2>' +
     '<div class="desc">Upload a CSV or Excel file (or paste CSV text). The importer understands Blinkit\'s native column names (Item ID, Warehouse Facility ID, Last 7 days, etc.) and auto-translates Blinkit IDs to your internal IDs. It also de-duplicates by default so you can re-import the same month safely.</div>' +
 
-    '<div class="two-col" style="align-items:start;margin-bottom:14px">' +
+    '<div id="imp-target-defaults-row" class="two-col" style="align-items:start;margin-bottom:14px">' +
       '<div>' +
         '<label class="muted" style="display:block;margin-bottom:4px">Target tab</label>' +
         '<select id="imp-target" style="padding:8px 10px;border:1px solid var(--nh-gray-line);border-radius:6px;display:block;width:100%">' +
@@ -1877,6 +2316,7 @@ function renderImport(el) {
     '<div style="display:flex;gap:0;border-bottom:1px solid var(--nh-gray-line);margin-bottom:14px">' +
       '<button id="imp-mode-upload" type="button" style="padding:9px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px">\u2B06 Upload file</button>' +
       '<button id="imp-mode-paste" type="button" style="padding:9px 16px;border:1px solid var(--nh-gray-line);border-bottom:0;background:#fff;color:var(--nh-navy);border-radius:6px 6px 0 0;cursor:pointer;font-size:13px;margin-left:4px">Paste CSV</button>' +
+      '<button id="imp-mode-soa" type="button" style="padding:9px 16px;border:1px solid var(--nh-gray-line);border-bottom:0;background:#fff;color:var(--nh-navy);border-radius:6px 6px 0 0;cursor:pointer;font-size:13px;margin-left:4px">\uD83D\uDCC1 Blinkit Monthly SOA</button>' +
     '</div>' +
     // Upload panel
     '<div id="imp-upload-panel">' +
@@ -1894,7 +2334,18 @@ function renderImport(el) {
       '<label class="muted" style="display:block;margin-bottom:6px">Paste CSV below (first row = headers)</label>' +
       '<textarea id="imp-csv" style="width:100%;min-height:200px;font-family:Menlo,monospace;font-size:12px;padding:8px;border:1px solid var(--nh-gray-line);border-radius:6px" placeholder="date,platform_id,city_id,sku_id,units,value\n2026-04-15,PLT-001,CTY-002,SKU-001,5,390"></textarea>' +
     '</div>' +
-    '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+    // Blinkit Monthly SOA (multi-file) panel
+    '<div id="imp-soa-panel" class="hidden">' +
+      '<div class="desc" style="margin-top:0">Select every file from Blinkit\'s monthly SOA / payout folder at once (Payout Breakup, Forward Orders, Storage Charges, Lost Damaged, Courier Charge, etc — whatever Blinkit gave you). Each file is read in your browser, matched by its sheet names, and combined into one month of <code class="inline">daily_fees</code> rows (plus <code class="inline">cash_ledger</code> entries for credit notes / reimbursements, if any). Works the same way every month — no changes needed as your Blinkit exports keep the same template.</div>' +
+      '<label class="muted" style="display:block;margin:10px 0 6px">Pick all files in the SOA folder (multi-select)</label>' +
+      '<input type="file" id="imp-soa-files" accept=".xlsx,.xls" multiple>' +
+      '<div style="margin-top:10px">' +
+        '<button id="imp-soa-process" type="button" style="padding:8px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px" disabled>Process files</button>' +
+      '</div>' +
+      '<div id="imp-soa-report" style="margin-top:14px"></div>' +
+      '<div id="imp-soa-result" style="margin-top:14px"></div>' +
+    '</div>' +
+    '<div id="imp-generic-footer" style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px">' +
       '<div id="imp-summary" class="muted"></div>' +
       '<button id="imp-run" style="padding:9px 18px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px" disabled>Import</button>' +
     '</div>' +
@@ -1959,16 +2410,19 @@ function renderImport(el) {
     currentMode = mode;
     $('imp-upload-panel').classList.toggle('hidden', mode !== 'upload');
     $('imp-paste-panel').classList.toggle('hidden', mode !== 'paste');
-    var tu = $('imp-mode-upload'), tp = $('imp-mode-paste');
+    $('imp-soa-panel').classList.toggle('hidden', mode !== 'soa');
+    // The SOA flow drives its own targets (daily_fees + cash_ledger) and
+    // has its own process/import button — hide the generic target picker
+    // and Import footer while it's active so there's nothing unused/
+    // confusing on screen.
+    $('imp-target-defaults-row').classList.toggle('hidden', mode === 'soa');
+    $('imp-generic-footer').classList.toggle('hidden', mode === 'soa');
+    var tu = $('imp-mode-upload'), tp = $('imp-mode-paste'), ts = $('imp-mode-soa');
     var activeStyle = 'padding:9px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px';
     var inactiveStyle = 'padding:9px 16px;border:1px solid var(--nh-gray-line);border-bottom:0;background:#fff;color:var(--nh-navy);border-radius:6px 6px 0 0;cursor:pointer;font-size:13px';
-    if (mode === 'upload') {
-      tu.setAttribute('style', activeStyle);
-      tp.setAttribute('style', inactiveStyle + ';margin-left:4px');
-    } else {
-      tu.setAttribute('style', inactiveStyle);
-      tp.setAttribute('style', activeStyle + ';margin-left:4px');
-    }
+    [[tu,'upload'],[tp,'paste'],[ts,'soa']].forEach(function(pair) {
+      pair[0].setAttribute('style', (pair[1] === mode ? activeStyle : inactiveStyle) + ';margin-left:4px');
+    });
     updateRunState();
   }
   function csvForSubmit() {
@@ -1987,6 +2441,168 @@ function renderImport(el) {
 
   $('imp-mode-upload').addEventListener('click', function() { setMode('upload'); });
   $('imp-mode-paste').addEventListener('click', function() { setMode('paste'); });
+  $('imp-mode-soa').addEventListener('click', function() { setMode('soa'); });
+
+  // ---- Blinkit Monthly SOA (multi-file) wiring ----
+  var soaSelectedFiles = [];
+  var soaLastResult = null; // {dailyFeesCsv, dailyFeesRowCount, cashLedgerCsv, cashLedgerRowCount}
+
+  $('imp-soa-files').addEventListener('change', function(e) {
+    soaSelectedFiles = Array.prototype.slice.call(e.target.files || []);
+    $('imp-soa-process').disabled = soaSelectedFiles.length === 0;
+    $('imp-soa-report').innerHTML = '';
+    $('imp-soa-result').innerHTML = '';
+    soaLastResult = null;
+  });
+
+  $('imp-soa-process').addEventListener('click', function() {
+    if (!soaSelectedFiles.length) return;
+    if (typeof XLSX === 'undefined') {
+      $('imp-soa-report').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Excel parser did not load. Check your internet connection and refresh.</div></div>';
+      return;
+    }
+    $('imp-soa-process').disabled = true;
+    $('imp-soa-report').innerHTML = '<span class="loading"></span> Reading ' + soaSelectedFiles.length + ' file(s)…';
+    $('imp-soa-result').innerHTML = '';
+
+    var readPromises = soaSelectedFiles.map(function(f) {
+      return new Promise(function(resolve) {
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+          try {
+            var data = new Uint8Array(ev.target.result);
+            var wb = XLSX.read(data, { type: 'array' });
+            resolve({ name: f.name, workbook: wb });
+          } catch (err) {
+            resolve({ name: f.name, error: 'Could not parse this file: ' + (err.message || err) });
+          }
+        };
+        reader.onerror = function() { resolve({ name: f.name, error: 'Could not read this file (corrupted or unreadable).' }); };
+        reader.readAsArrayBuffer(f);
+      });
+    });
+
+    Promise.all(readPromises).then(function(files) {
+      var result;
+      try {
+        result = soaAggregateFiles_(files);
+      } catch (err) {
+        $('imp-soa-process').disabled = false;
+        $('imp-soa-report').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Failed to process files: ' + escapeHtml(err.message || err) + '</div></div>';
+        return;
+      }
+      renderSoaReport(result);
+      $('imp-soa-process').disabled = false;
+    });
+  });
+
+  function renderSoaReport(result) {
+    var platforms = (state.boot.platforms || []);
+    var blinkit = platforms.find(function(p) { return /blinkit/i.test(p.name || ''); });
+    var platformId = blinkit ? blinkit.platform_id : 'PLT-001';
+    var monthLabel = Object.keys(result.dailyFees).sort()[0];
+    var sourceLabel = 'blinkit-soa' + (monthLabel ? '-' + monthLabel.slice(0, 7) : '');
+
+    var fees = soaDailyFeesToCsv_(result.dailyFees, platformId, sourceLabel);
+    var cash = soaCashLedgerToCsv_(result.cashLedger, sourceLabel);
+    soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, cashCsv: cash.csv, cashRows: cash.rowCount };
+
+    // Per-file report
+    var fileRows = result.fileReport.map(function(f) {
+      var cls = f.status === 'error' ? 'pill-err' : (f.status === 'unrecognized' ? 'pill-warn' : 'pill-ok');
+      var detail = (f.detected || []).map(function(d) {
+        return d.error ? (d.sheet + ': error — ' + escapeHtml(d.error)) : (d.sheet + ' (' + d.type + '): ' + d.rows + ' row(s)');
+      }).join('; ');
+      return '<tr><td style="padding:3px 8px">' + escapeHtml(f.name) + '</td>' +
+             '<td style="padding:3px 8px"><span class="pill ' + cls + '">' + f.status + '</span></td>' +
+             '<td style="padding:3px 8px;font-size:11px" class="muted">' + (f.message ? escapeHtml(f.message) : detail) + '</td></tr>';
+    }).join('');
+    var errorCount = result.fileReport.filter(function(f) { return f.status === 'error'; }).length;
+    var unrecCount = result.fileReport.filter(function(f) { return f.status === 'unrecognized'; }).length;
+
+    var reportHtml = '<table style="font-size:12px;width:100%"><thead><tr><th>File</th><th>Status</th><th>Detected</th></tr></thead><tbody>' + fileRows + '</tbody></table>';
+    if (errorCount) reportHtml += '<div class="muted" style="font-size:11px;margin-top:6px;color:#b91c1c">' + errorCount + ' file(s) could not be read and were skipped — everything else still processed.</div>';
+    if (unrecCount) reportHtml += '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">' + unrecCount + ' file(s) had no sheets this importer recognises (unrelated file, or Blinkit changed the template) — skipped, nothing lost from the rest.</div>';
+    if (result.unassigned.length) {
+      var unassignedTotal = result.unassigned.reduce(function(s, u) { return s + u.amount; }, 0);
+      reportHtml += '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">' + result.unassigned.length + ' amount(s) totalling ' + inr(unassignedTotal) + ' had no usable date (e.g. not yet settled) and were left out of the daily totals below — they\'ll show up once Blinkit adds a settlement date in a future export.</div>';
+    }
+
+    // Reconciliation vs Payout Breakup monthly totals (informational only)
+    var reconHtml = '';
+    if (result.payoutBreakupTotals) {
+      var sums = { storage_fee: 0, shipping_fee: 0, commission_fee: 0, tds: 0, lost_damaged: 0 };
+      Object.keys(result.dailyFees).forEach(function(d) {
+        var r = result.dailyFees[d];
+        Object.keys(sums).forEach(function(k) { sums[k] += r[k]; });
+      });
+      var labels = { storage_fee: 'Storage', shipping_fee: 'Shipping', commission_fee: 'Commission', tds: 'TDS/TCS', lost_damaged: 'Lost/Damaged' };
+      reconHtml = '<details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">Reconciliation vs Payout Breakup monthly totals (click to expand)</summary>' +
+        '<table style="margin-top:6px;font-size:12px"><thead><tr><th>Category</th><th>Aggregated from detail files</th><th>Payout Breakup total</th></tr></thead><tbody>' +
+        Object.keys(labels).map(function(k) {
+          var diff = Math.abs(sums[k] - result.payoutBreakupTotals[k]);
+          var flag = diff > 1 ? ' <span class="pill pill-warn">check</span>' : '';
+          return '<tr><td>' + labels[k] + '</td><td>' + inr(sums[k]) + '</td><td>' + inr(result.payoutBreakupTotals[k]) + flag + '</td></tr>';
+        }).join('') +
+        '</tbody></table></details>';
+    }
+
+    var importDisabled = fees.rowCount === 0;
+    var resultHtml = '<div class="alert ' + (errorCount ? 'medium' : 'low') + '"><div class="sev">Processed</div><div class="msg">' +
+      '<b>' + fees.rowCount + ' day(s) of daily_fees</b> ready' + (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') + '.' +
+      reportHtml + reconHtml +
+      '</div></div>' +
+      '<div style="margin-top:10px;display:flex;justify-content:flex-end">' +
+      '<button id="imp-soa-run" style="padding:9px 18px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px"' + (importDisabled ? ' disabled' : '') + '>Import into the sheet</button>' +
+      '</div>';
+
+    $('imp-soa-report').innerHTML = '';
+    $('imp-soa-result').innerHTML = resultHtml;
+
+    $('imp-soa-run') && $('imp-soa-run').addEventListener('click', function() {
+      runSoaImport();
+    });
+  }
+
+  function runSoaImport() {
+    if (!soaLastResult) return;
+    var dedupe = $('imp-dedupe').value;
+    var dryRun = $('imp-dryrun').checked;
+    var btn = $('imp-soa-run');
+    btn.disabled = true;
+    btn.textContent = 'Importing…';
+
+    api('importCsv', {
+      target: 'daily_fees', csv: soaLastResult.feesCsv,
+      options: { dedupe: dedupe, dry_run: dryRun, source_file: 'blinkit-soa-multifile' }
+    }, 'POST').then(function(feesResult) {
+      if (soaLastResult.cashRows > 0) {
+        return api('importCsv', {
+          target: 'cash_ledger', csv: soaLastResult.cashCsv,
+          options: { dedupe: 'skip', dry_run: dryRun, source_file: 'blinkit-soa-multifile' }
+        }, 'POST').then(function(cashResult) { return { feesResult: feesResult, cashResult: cashResult }; });
+      }
+      return { feesResult: feesResult, cashResult: null };
+    }).then(function(both) {
+      var f = both.feesResult, c = both.cashResult;
+      var ok = f.ok !== false && (!c || c.ok !== false);
+      var status = ok
+        ? '<div style="color:#15803d;font-weight:600">✓ Imported successfully.</div>'
+        : '<div style="color:#b91c1c;font-weight:600">✗ Something went wrong — see details.</div>';
+      var body = status +
+        '<div style="margin-top:6px"><b>daily_fees:</b> ' + (f.ok === false ? escapeHtml(f.error || 'failed') :
+          (f.added + ' added, ' + f.updated + ' updated, ' + f.skipped_duplicate + ' dup skipped')) + '</div>' +
+        (c ? '<div style="margin-top:4px"><b>cash_ledger:</b> ' + (c.ok === false ? escapeHtml(c.error || 'failed') :
+          (c.added + ' added, ' + c.updated + ' updated, ' + c.skipped_duplicate + ' dup skipped')) + '</div>' : '');
+      $('imp-soa-result').innerHTML += '<div class="alert ' + (ok ? 'low' : 'high') + '" style="margin-top:10px"><div class="sev">' + (dryRun ? 'Preview' : 'Done') + '</div><div class="msg">' + body + '</div></div>';
+      btn.disabled = false;
+      btn.textContent = 'Import into the sheet';
+    }).catch(function(e) {
+      $('imp-soa-result').innerHTML += '<div class="alert high" style="margin-top:10px"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message || e) + '</div></div>';
+      btn.disabled = false;
+      btn.textContent = 'Import into the sheet';
+    });
+  }
   $('imp-csv').addEventListener('input', updateRunState);
 
   $('imp-file').addEventListener('change', function(e) {
