@@ -2341,6 +2341,25 @@ function renderImport(el) {
     '<div class="panel"><h2>Import data</h2>' +
     '<div class="desc">Upload a CSV or Excel file (or paste CSV text). The importer understands Blinkit\'s native column names (Item ID, Warehouse Facility ID, Last 7 days, etc.) and auto-translates Blinkit IDs to your internal IDs. It also de-duplicates by default so you can re-import the same month safely.</div>' +
 
+    // Duplicate handling + Dry run apply to every import mode, including
+    // the SOA multi-file tab (runSoaImport reads both) \u2014 kept in their
+    // own always-visible row, separate from Target tab/Defaults below
+    // (which the SOA tab drives itself and hides). Previously these were
+    // bundled into the same hideable row, which meant there was no way
+    // to reach "Replace duplicates" while on the SOA tab at all.
+    '<div id="imp-dedupe-dryrun-row" style="margin-bottom:14px;max-width:340px">' +
+      '<label class="muted" style="display:block;margin-bottom:4px">Duplicate handling</label>' +
+      '<select id="imp-dedupe" style="padding:8px 10px;border:1px solid var(--nh-gray-line);border-radius:6px;display:block;width:100%">' +
+        '<option value="skip" selected>Skip duplicates (safe, recommended)</option>' +
+        '<option value="replace">Replace duplicates (use for corrections)</option>' +
+        '<option value="append">Append all (no de-dup, may create duplicates)</option>' +
+      '</select>' +
+      '<div style="margin-top:10px">' +
+        '<label style="font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer">' +
+          '<input type="checkbox" id="imp-dryrun"> Dry run \u2014 count only, don\'t write' +
+        '</label>' +
+      '</div>' +
+    '</div>' +
     '<div id="imp-target-defaults-row" class="two-col" style="align-items:start;margin-bottom:14px">' +
       '<div>' +
         '<label class="muted" style="display:block;margin-bottom:4px">Target tab</label>' +
@@ -2349,19 +2368,6 @@ function renderImport(el) {
           '<option>inventory_snapshots</option><option>complaints_returns</option>' +
           '<option>expansion_plan</option><option>monthly_budget</option><option>monthly_forecast</option>' +
         '</select>' +
-
-        '<label class="muted" style="display:block;margin:10px 0 4px">Duplicate handling</label>' +
-        '<select id="imp-dedupe" style="padding:8px 10px;border:1px solid var(--nh-gray-line);border-radius:6px;display:block;width:100%">' +
-          '<option value="skip" selected>Skip duplicates (safe, recommended)</option>' +
-          '<option value="replace">Replace duplicates (use for corrections)</option>' +
-          '<option value="append">Append all (no de-dup, may create duplicates)</option>' +
-        '</select>' +
-
-        '<div style="margin-top:10px">' +
-          '<label style="font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer">' +
-            '<input type="checkbox" id="imp-dryrun"> Dry run \u2014 count only, don\'t write' +
-          '</label>' +
-        '</div>' +
       '</div>' +
       '<div>' +
         '<label class="muted" style="display:block;margin-bottom:4px">Defaults (used for empty/missing fields)</label>' +
