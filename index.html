@@ -617,17 +617,32 @@ function renderSales(el) {
              '<td class="num">' + inr(r.value) + '</td>' +
              '<td class="num">' + (r.units ? '\u20B9'+(r.value/r.units).toFixed(1) : '\u2014') + '</td></tr>';
     }).join('');
-    var daily = data.rows.slice().sort(function(a,b){return b.date.localeCompare(a.date);}).slice(0,500).map(function(r) {
+    var topTotalUnits = rows.reduce(function(s,r){return s+r.units;}, 0);
+    var topTotalValue = rows.reduce(function(s,r){return s+r.value;}, 0);
+    var topTotalRow = '<tr style="font-weight:700;border-top:2px solid var(--nh-gray-line)"><td>Total</td><td></td>' +
+      '<td class="num">' + topTotalUnits.toLocaleString('en-IN') + '</td>' +
+      '<td class="num">' + inr(topTotalValue) + '</td>' +
+      '<td class="num">' + (topTotalUnits ? '\u20B9'+(topTotalValue/topTotalUnits).toFixed(1) : '\u2014') + '</td></tr>';
+
+    var dailyRows = data.rows.slice().sort(function(a,b){return b.date.localeCompare(a.date);}).slice(0,500);
+    var daily = dailyRows.map(function(r) {
       return '<tr><td>' + escapeHtml(r.date) + '</td><td>' + escapeHtml(skuMap[r.sku_id]||r.sku_id) + '</td>' +
              '<td>' + escapeHtml(cityMap[r.city_id]||r.city_id) + '</td>' +
              '<td class="num">' + r.units + '</td><td class="num">' + inr(r.value) + '</td></tr>';
     }).join('');
+    var dailyTotalUnits = dailyRows.reduce(function(s,r){return s+r.units;}, 0);
+    var dailyTotalValue = dailyRows.reduce(function(s,r){return s+r.value;}, 0);
+    var dailyTotalRow = '<tr style="font-weight:700;border-top:2px solid var(--nh-gray-line)"><td>Total' +
+      (data.rows.length > dailyRows.length ? ' (latest ' + dailyRows.length + ')' : '') + '</td><td></td><td></td>' +
+      '<td class="num">' + dailyTotalUnits.toLocaleString('en-IN') + '</td>' +
+      '<td class="num">' + inr(dailyTotalValue) + '</td></tr>';
+
     el.innerHTML =
       '<div class="panel"><h2>Sales by SKU \u00D7 City (' + data.rows.length + ' day-rows)</h2>' +
       '<div class="desc">Filter dates in the top bar.</div>' +
-      '<table><thead><tr><th>SKU</th><th>City</th><th class="num">Units</th><th class="num">Revenue</th><th class="num">\u20B9/unit</th></tr></thead><tbody>' + topHtml + '</tbody></table></div>' +
+      '<table><thead><tr><th>SKU</th><th>City</th><th class="num">Units</th><th class="num">Revenue</th><th class="num">\u20B9/unit</th></tr></thead><tbody>' + topHtml + topTotalRow + '</tbody></table></div>' +
       '<div class="panel"><h2>Daily detail (latest 500)</h2>' +
-      '<table><thead><tr><th>Date</th><th>SKU</th><th>City</th><th class="num">Units</th><th class="num">Revenue</th></tr></thead><tbody>' + daily + '</tbody></table></div>';
+      '<table><thead><tr><th>Date</th><th>SKU</th><th>City</th><th class="num">Units</th><th class="num">Revenue</th></tr></thead><tbody>' + daily + dailyTotalRow + '</tbody></table></div>';
   });
 }
 
