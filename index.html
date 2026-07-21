@@ -2012,7 +2012,20 @@ function soaAddAmount_(bucketMap, date, field, amount, unassigned, sourceLabel) 
 // this row" case (see soaAggregateFiles) so an amount is never silently
 // dropped, just clearly flagged.
 
-function soaExtractOrders_(rows, dailyFees, unassigned, sourceLabel) {
+// `kind` is 'forward' or 'cancelled'. In addition to the fee amounts (used
+// as before), this also pushes one row per line item into `salesRows` —
+// raw cells shaped exactly like Blinkit's native Sales Report export
+// (Order Date, Order Status, Supply City, Item Id, Quantity, Selling
+// Price (Rs)) so the SAME already-deployed daily_sales aggregation path
+// (isRawBlinkitSalesReport_ / aggregateBlinkitSalesReport_ in the Apps
+// Script backend — city/SKU auto-create, DELIVERED filtering, dedupe) can
+// process it with zero backend changes. Forward Orders rows only count if
+// Order Status is DELIVERED (undelivered/pending orders aren't real
+// sales yet); every row in the Cancelled/Returned Orders sheet nets out a
+// previously-counted delivery, so its quantity is pushed NEGATIVE and its
+// synthetic status is forced to DELIVERED so the backend's status filter
+// doesn't drop it — the negative quantity is what does the netting.
+function soaExtractOrders_(rows, dailyFees, unassigned, sourceLabel, kind, salesRows) {
   // Note: Blinkit's headers here are "Commission Charge (Rs)" / "Shipping
   // Charge (Rs)" etc — the "(Rs)" survives normalisation as a trailing
   // "rs", so both the with- and without-suffix forms are matched in case
@@ -2027,11 +2040,27 @@ function soaExtractOrders_(rows, dailyFees, unassigned, sourceLabel) {
     var commission = soaNum_(soaCell_(row, colIx, ['commissionchargers', 'commissioncharge'])) + soaNum_(soaCell_(row, colIx, ['commissiongstrs', 'commissiongst']));
     var shipping = soaNum_(soaCell_(row, colIx, ['shippingchargers', 'shippingcharge'])) + soaNum_(soaCell_(row, colIx, ['shippinggstrs', 'shippinggst']));
     var tds = soaNum_(soaCell_(row, colIx, ['tds194oamount'])) + soaNum_(soaCell_(row, colIx, ['tds194qamount'])) + soaNum_(soaCell_(row, colIx, ['tcsamount']));
-    if (!commission && !shipping && !tds) continue;
-    soaAddAmount_(dailyFees, date, 'commission_fee', commission, unassigned, sourceLabel);
-    soaAddAmount_(dailyFees, date, 'shipping_fee', shipping, unassigned, sourceLabel);
-    soaAddAmount_(dailyFees, date, 'tds', tds, unassigned, sourceLabel);
-    n++;
+    if (commission || shipping || tds) {
+      soaAddAmount_(dailyFees, date, 'commission_fee', commission, unassigned, sourceLabel);
+      soaAddAmount_(dailyFees, date, 'shipping_fee', shipping, unassigned, sourceLabel);
+      soaAddAmount_(dailyFees, date, 'tds', tds, unassigned, sourceLabel);
+      n++;
+    }
+
+    if (salesRows) {
+      var status = String(soaCell_(row, colIx, ['orderstatus']) || '').trim().toUpperCase();
+      var city = soaCell_(row, colIx, ['customercity']);
+      var itemId = soaCell_(row, colIx, ['itemid']);
+      var qty = soaNum_(soaCell_(row, colIx, ['quantity']));
+      var price = soaNum_(soaCell_(row, colIx, ['sellingpricers', 'sellingprice']));
+      if (date && city && itemId && qty) {
+        if (kind === 'forward' && status === 'DELIVERED') {
+          salesRows.push([date, 'DELIVERED', city, itemId, qty, price]);
+        } else if (kind === 'cancelled') {
+          salesRows.push([date, 'DELIVERED', city, itemId, -qty, price]);
+        }
+      }
+    }
   }
   return n;
 }
@@ -2226,6 +2255,7 @@ function soaAggregateFiles_(files) {
   var dailyFees = {};
   var unassigned = [];
   var cashLedger = [];
+  var salesRows = []; // raw rows shaped like Blinkit's native Sales Report export — see soaExtractOrders_
   var payoutBreakupTotals = null;
   var fileReport = [];
 
@@ -2241,7 +2271,8 @@ function soaAggregateFiles_(files) {
         try {
           var rows = soaSheetRows_(wb.Sheets[sheetName]);
           var n = 0;
-          if (type === 'forward_orders' || type === 'cancelled_orders') n = soaExtractOrders_(rows, dailyFees, unassigned, label);
+          if (type === 'forward_orders') n = soaExtractOrders_(rows, dailyFees, unassigned, label, 'forward', salesRows);
+          else if (type === 'cancelled_orders') n = soaExtractOrders_(rows, dailyFees, unassigned, label, 'cancelled', salesRows);
           else if (type === 'upfront_storage') n = soaExtractUpfrontStorage_(rows, dailyFees, unassigned, label);
           else if (type === 'daily_ageing') n = soaExtractDailyAgeing_(rows, dailyFees, unassigned, label);
           else if (type === 'lost_damaged') n = soaExtractLostDamaged_(rows, dailyFees, unassigned, label);
@@ -2265,7 +2296,18 @@ function soaAggregateFiles_(files) {
     }
   });
 
-  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, payoutBreakupTotals: payoutBreakupTotals, fileReport: fileReport };
+  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, fileReport: fileReport };
+}
+
+// Turns the collected raw order-line rows into a CSV shaped exactly like
+// Blinkit's native Sales Report export, so it can go through the existing
+// isRawBlinkitSalesReport_ / aggregateBlinkitSalesReport_ path in the
+// backend unmodified (auto-creates unrecognised cities/SKUs, dedupes,
+// etc. — all already built and deployed for that importer).
+function soaSalesRowsToCsv_(salesRows) {
+  var lines = ['Order Date,Order Status,Supply City,Item Id,Quantity,Selling Price (Rs)'];
+  salesRows.forEach(function(r) { lines.push(r.map(soaCsvField_).join(',')); });
+  return lines.join('\n');
 }
 
 function soaCsvField_(v) {
@@ -2520,7 +2562,16 @@ function renderImport(el) {
 
     var fees = soaDailyFeesToCsv_(result.dailyFees, platformId, sourceLabel);
     var cash = soaCashLedgerToCsv_(result.cashLedger, sourceLabel);
-    soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, cashCsv: cash.csv, cashRows: cash.rowCount };
+    var salesCsv = result.salesRows.length ? soaSalesRowsToCsv_(result.salesRows) : '';
+    soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, cashCsv: cash.csv, cashRows: cash.rowCount,
+      salesCsv: salesCsv, salesRowCount: result.salesRows.length };
+
+    // Units / gross bill amount straight from the order-line rows, shown
+    // up front so it can be checked directly against a manual sum of the
+    // Quantity / Total Gross Bill Amount columns in the source file(s) —
+    // this already nets out cancelled/returned orders (negative qty).
+    var salesTotalUnits = result.salesRows.reduce(function(s, r) { return s + r[4]; }, 0);
+    var salesTotalGross = result.salesRows.reduce(function(s, r) { return s + r[4] * r[5]; }, 0);
 
     // Per-file report
     var fileRows = result.fileReport.map(function(f) {
@@ -2562,9 +2613,18 @@ function renderImport(el) {
         '</tbody></table></details>';
     }
 
-    var importDisabled = fees.rowCount === 0;
+    var salesSummaryHtml = result.salesRows.length
+      ? '<div style="margin-top:8px;padding:8px 10px;background:var(--nh-gray-bg);border-radius:6px;font-size:12px">' +
+        'From the order-level sheets (Forward Orders DELIVERED, net of Cancelled/Returned): <b>' + salesTotalUnits.toLocaleString('en-IN') + ' units</b>, <b>' + inr(salesTotalGross) + ' gross bill amount</b>. ' +
+        'Compare this against a manual sum of the Quantity / Total Gross Bill Amount columns in your source file(s) — this figure already excludes non-delivered orders and nets out cancellations, so a plain column SUM in Excel (with no status filter) will run higher.' +
+        '</div>'
+      : '';
+
+    var importDisabled = fees.rowCount === 0 && result.salesRows.length === 0;
     var resultHtml = '<div class="alert ' + (errorCount ? 'medium' : 'low') + '"><div class="sev">Processed</div><div class="msg">' +
-      '<b>' + fees.rowCount + ' day(s) of daily_fees</b> ready' + (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') + '.' +
+      '<b>' + fees.rowCount + ' day(s) of daily_fees</b> ready' + (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') +
+      (result.salesRows.length ? ', plus <b>' + result.salesRows.length + ' order line(s)</b> for daily_sales' : '') + '.' +
+      salesSummaryHtml +
       reportHtml + reconHtml +
       '</div></div>' +
       '<div style="margin-top:10px;display:flex;justify-content:flex-end">' +
@@ -2587,10 +2647,12 @@ function renderImport(el) {
     btn.disabled = true;
     btn.textContent = 'Importing…';
 
-    api('importCsv', {
-      target: 'daily_fees', csv: soaLastResult.feesCsv,
-      options: { dedupe: dedupe, dry_run: dryRun, source_file: 'blinkit-soa-multifile' }
-    }, 'POST').then(function(feesResult) {
+    var feesPromise = soaLastResult.feesRows > 0
+      ? api('importCsv', { target: 'daily_fees', csv: soaLastResult.feesCsv,
+          options: { dedupe: dedupe, dry_run: dryRun, source_file: 'blinkit-soa-multifile' } }, 'POST')
+      : Promise.resolve(null);
+
+    feesPromise.then(function(feesResult) {
       if (soaLastResult.cashRows > 0) {
         return api('importCsv', {
           target: 'cash_ledger', csv: soaLastResult.cashCsv,
@@ -2599,16 +2661,33 @@ function renderImport(el) {
       }
       return { feesResult: feesResult, cashResult: null };
     }).then(function(both) {
-      var f = both.feesResult, c = both.cashResult;
-      var ok = f.ok !== false && (!c || c.ok !== false);
+      if (soaLastResult.salesRowCount > 0) {
+        // No columnMap → the backend auto-detects this as a raw Blinkit
+        // Sales Report shape (isRawBlinkitSalesReport_) and runs it
+        // through aggregateBlinkitSalesReport_ — the exact same native
+        // handling used for a directly-uploaded Sales Report file,
+        // including city/SKU auto-create.
+        return api('importCsv', {
+          target: 'daily_sales', csv: soaLastResult.salesCsv,
+          options: { dedupe: dedupe, dry_run: dryRun, source_file: 'blinkit-soa-orders' }
+        }, 'POST').then(function(salesResult) { return { feesResult: both.feesResult, cashResult: both.cashResult, salesResult: salesResult }; });
+      }
+      return { feesResult: both.feesResult, cashResult: both.cashResult, salesResult: null };
+    }).then(function(all) {
+      var f = all.feesResult, c = all.cashResult, s = all.salesResult;
+      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!s || s.ok !== false);
       var status = ok
         ? '<div style="color:#15803d;font-weight:600">✓ Imported successfully.</div>'
         : '<div style="color:#b91c1c;font-weight:600">✗ Something went wrong — see details.</div>';
       var body = status +
-        '<div style="margin-top:6px"><b>daily_fees:</b> ' + (f.ok === false ? escapeHtml(f.error || 'failed') :
-          (f.added + ' added, ' + f.updated + ' updated, ' + f.skipped_duplicate + ' dup skipped')) + '</div>' +
+        (f ? '<div style="margin-top:6px"><b>daily_fees:</b> ' + (f.ok === false ? escapeHtml(f.error || 'failed') :
+          (f.added + ' added, ' + f.updated + ' updated, ' + f.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
         (c ? '<div style="margin-top:4px"><b>cash_ledger:</b> ' + (c.ok === false ? escapeHtml(c.error || 'failed') :
-          (c.added + ' added, ' + c.updated + ' updated, ' + c.skipped_duplicate + ' dup skipped')) + '</div>' : '');
+          (c.added + ' added, ' + c.updated + ' updated, ' + c.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
+        (s ? '<div style="margin-top:4px"><b>daily_sales:</b> ' + (s.ok === false ? escapeHtml(s.error || 'failed') :
+          (s.added + ' added, ' + s.updated + ' updated, ' + s.skipped_duplicate + ' dup skipped' +
+           ((s.auto_created_cities && s.auto_created_cities.length) ? ', ' + s.auto_created_cities.length + ' new city/cities' : '') +
+           ((s.auto_created_skus && s.auto_created_skus.length) ? ', ' + s.auto_created_skus.length + ' new SKU(s)' : ''))) + '</div>' : '');
       // insertAdjacentHTML (not innerHTML +=) so the existing button node
       // — whose .disabled/.textContent we're about to reset below — isn't
       // destroyed and silently replaced by a fresh copy parsed from the
