@@ -2341,9 +2341,22 @@ function soaDailyFeesToCsv_(dailyFees, platformId, sourceLabel) {
   return { csv: lines.join('\n'), rowCount: dates.length };
 }
 function soaCashLedgerToCsv_(cashLedger, sourceLabel) {
+  // entry_id must be STABLE across re-imports of the same month, since it's
+  // cash_ledger's dedupe key (see TARGET_UNIQUE_KEYS in the backend) — using
+  // Date.now() here (the previous behaviour) meant every re-run generated a
+  // brand-new id, so "Replace duplicates" could never actually find the old
+  // row and silently created a duplicate cash_ledger entry on every re-import
+  // instead of correcting it. None of the source sheets carry a usable
+  // reference number, so the id is built from the row's own content (date +
+  // category + a per-group counter) — deterministic as long as the same
+  // input file produces rows in the same order, which it does.
   var lines = ['entry_id,date,type,amount,category,notes'];
-  cashLedger.forEach(function(r, i) {
-    lines.push(['CSH-SOA-' + Date.now() + '-' + i, r.date, r.type, round2_(r.amount), r.category, r.notes || sourceLabel].map(soaCsvField_).join(','));
+  var seen = {};
+  cashLedger.forEach(function(r) {
+    var groupKey = r.date + '|' + r.category;
+    seen[groupKey] = (seen[groupKey] || 0) + 1;
+    var entryId = 'CSH-SOA-' + String(r.date).replace(/-/g, '') + '-' + r.category + '-' + String(seen[groupKey]).padStart(2, '0');
+    lines.push([entryId, r.date, r.type, round2_(r.amount), r.category, r.notes || sourceLabel].map(soaCsvField_).join(','));
   });
   return { csv: lines.join('\n'), rowCount: cashLedger.length };
 }
@@ -2381,7 +2394,9 @@ function renderImport(el) {
           '<option>daily_sales</option><option>daily_fees</option><option>daily_ad_spend</option>' +
           '<option>inventory_snapshots</option><option>complaints_returns</option>' +
           '<option>expansion_plan</option><option>monthly_budget</option><option>monthly_forecast</option>' +
+          '<option>cash_ledger</option>' +
         '</select>' +
+        '<div id="imp-target-auto" class="muted" style="font-size:11px;margin-top:4px"></div>' +
       '</div>' +
       '<div>' +
         '<label class="muted" style="display:block;margin-bottom:4px">Defaults (used for empty/missing fields)</label>' +
@@ -2431,6 +2446,45 @@ function renderImport(el) {
   var currentCsv = '';
   var currentMode = 'upload';
   var parsedWorkbook = null;
+
+  // Auto-detects which sheet tab an uploaded file belongs to, so picking
+  // "Target tab" by hand is only needed when the file's headers don't
+  // clearly match any tab (e.g. a raw Blinkit export, which still goes
+  // through the existing alias-based column mapper after this). Each
+  // signature is that tab's own header row shape (mirrors REQUIRED_SCHEMA_
+  // in the backend, plus each tab's own *_id column, which is the
+  // strongest single signal since it's unique per tab).
+  var IMPORT_TARGET_SIGNATURES_ = {
+    daily_sales:         ['sales_id', 'date', 'platform_id', 'city_id', 'sku_id', 'units', 'value'],
+    daily_fees:          ['fee_id', 'date', 'platform_id', 'storage_fee', 'shipping_fee', 'commission_fee', 'tds', 'lost_damaged'],
+    daily_ad_spend:      ['ad_id', 'date', 'platform_id', 'city_id', 'sku_id', 'amount'],
+    inventory_snapshots: ['snapshot_id', 'snapshot_date', 'warehouse_id', 'sku_id', 'sellable', 'unsellable', 'near_expiry', 'sold_7d', 'sold_15d', 'sold_30d'],
+    complaints_returns:  ['date', 'platform_id', 'sku_id', 'type', 'units', 'reason'],
+    expansion_plan:      ['expansion_id', 'sku_id', 'city_id', 'status'],
+    monthly_budget:      ['budget_id', 'month', 'line_item', 'amount'],
+    monthly_forecast:    ['forecast_id', 'month', 'metric', 'forecast_value'],
+    cash_ledger:         ['entry_id', 'date', 'type', 'amount', 'category'],
+  };
+  function detectImportTarget_(headerCells) {
+    var norm = headerCells.map(function(h) { return String(h || '').trim().toLowerCase(); });
+    var best = null, bestScore = 0;
+    Object.keys(IMPORT_TARGET_SIGNATURES_).forEach(function(target) {
+      var sig = IMPORT_TARGET_SIGNATURES_[target];
+      var matched = sig.filter(function(col) { return norm.indexOf(col) !== -1; }).length;
+      var score = matched / sig.length;
+      // The *_id column (sig[0] for every target here) is unique per tab —
+      // seeing it is a near-certain signal, so it outweighs partial overlap
+      // on the more generic columns (date/platform_id/amount, etc. show up
+      // in several tabs' signatures).
+      if (norm.indexOf(sig[0]) !== -1) score += 1;
+      if (score > bestScore) { bestScore = score; best = target; }
+    });
+    // Require at least the id column match (score > 1) or near-complete
+    // overlap of a signature with no id column (complaints_returns/
+    // daily_ad_spend-without-ad_id) — otherwise leave it for the user to
+    // pick, rather than guessing on a weak/generic match.
+    return bestScore >= 1 ? best : null;
+  }
 
   // Target-specific default-value fields
   var DEFAULTS_FIELDS = {
@@ -2511,6 +2565,19 @@ function renderImport(el) {
     if (csv && csv.trim()) {
       var lines = csv.split(/\r?\n/).filter(function(l){return l.trim().length;});
       rowCount = Math.max(0, lines.length - 1);
+      // Upload mode already auto-detects in renderPreview (has a nicer
+      // label/preview to hang the note on) — this covers Paste CSV, which
+      // has no separate preview step of its own.
+      if (currentMode === 'paste' && lines.length) {
+        var detected = detectImportTarget_(splitCsvLinePreview(lines[0]));
+        if (detected) {
+          $('imp-target').value = detected;
+          renderDefaultsFields();
+          $('imp-target-auto').textContent = '✓ Auto-detected from column headers — change the dropdown above if this looks wrong.';
+        } else {
+          $('imp-target-auto').textContent = '';
+        }
+      }
     }
     $('imp-run').disabled = rowCount === 0;
     $('imp-summary').textContent = rowCount > 0 ? ('Ready to import ' + rowCount + ' row' + (rowCount===1?'':'s')) : '';
@@ -2802,6 +2869,16 @@ function renderImport(el) {
     var headerCells = splitCsvLinePreview(lines[0]);
     var body = lines.slice(1, 6).map(splitCsvLinePreview);
     var rowCount = lines.length - 1;
+
+    var detected = detectImportTarget_(headerCells);
+    if (detected) {
+      $('imp-target').value = detected;
+      renderDefaultsFields();
+      $('imp-target-auto').textContent = '\u2713 Auto-detected from column headers \u2014 change the dropdown above if this looks wrong.';
+    } else {
+      $('imp-target-auto').textContent = '';
+    }
+
     var html = '<div class="muted" style="margin-bottom:6px">' + escapeHtml(label||'') + ' \u00B7 ' + rowCount + ' data row' + (rowCount===1?'':'s') + ' detected (showing first ' + body.length + ')</div>';
     html += '<div style="overflow:auto;border:1px solid var(--nh-gray-line);border-radius:6px;max-height:260px">' +
             '<table style="font-size:12px"><thead><tr>' +
