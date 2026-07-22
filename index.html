@@ -2064,6 +2064,18 @@ function soaExtractOrders_(rows, dailyFees, unassigned, sourceLabel, kind, sales
   }
   return n;
 }
+// Unlike Commission/Shipping (whose Forward Orders columns carry an explicit
+// "... GST (Rs)" figure alongside the base charge), Blinkit's storage detail
+// exports (Daily Ageing, Upfront Storage Charges) never break GST out per
+// line — the base charge is all that's in the row. Payout Breakup's summary
+// tab shows GST on Storage Charge as a separate lump line, confirmed at
+// exactly 18% of the base storage charge (India's standard GST slab for
+// this service) across a real July SOA file. Applying that rate here is
+// what makes the aggregated storage_fee total actually match Payout
+// Breakup's total instead of silently running ~18% low — the per-day/
+// per-row split is still preserved, only the per-line amount is grossed up.
+var SOA_STORAGE_GST_RATE_ = 0.18;
+
 function soaExtractUpfrontStorage_(rows, dailyFees, unassigned, sourceLabel) {
   var hdr = soaFindHeaderRow_(rows, [['grndate'], ['totalchargers']]);
   if (!hdr) return 0;
@@ -2074,7 +2086,7 @@ function soaExtractUpfrontStorage_(rows, dailyFees, unassigned, sourceLabel) {
     var date = soaParseDate_(soaCell_(row, colIx, ['grndate']));
     var amt = soaNum_(soaCell_(row, colIx, ['totalchargers']));
     if (!amt) continue;
-    soaAddAmount_(dailyFees, date, 'storage_fee', amt, unassigned, sourceLabel);
+    soaAddAmount_(dailyFees, date, 'storage_fee', amt * (1 + SOA_STORAGE_GST_RATE_), unassigned, sourceLabel);
     n++;
   }
   return n;
@@ -2104,7 +2116,9 @@ function soaExtractDailyAgeing_(rows, dailyFees, unassigned, sourceLabel) {
     dateCols.forEach(function(dc) {
       var units = soaNum_(row[dc.ix]);
       if (!units) return;
-      soaAddAmount_(dailyFees, dc.date, 'storage_fee', perDay * units, unassigned, sourceLabel);
+      // See SOA_STORAGE_GST_RATE_ above soaExtractUpfrontStorage_ — Daily
+      // Ageing's "Total Charge" is pre-GST, same as Upfront Storage.
+      soaAddAmount_(dailyFees, dc.date, 'storage_fee', perDay * units * (1 + SOA_STORAGE_GST_RATE_), unassigned, sourceLabel);
       n++;
     });
   }
