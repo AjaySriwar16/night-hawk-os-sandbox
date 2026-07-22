@@ -1899,6 +1899,7 @@ var SOA_SHEET_TYPES = [
   { type: 'pending_settlement', names: ['settlement received'] },
   { type: 'payout_breakup',     names: ['payout breakup'] },
   { type: 'note',               names: ['note'] },                 // recognised, intentionally not extracted
+  { type: 'stock_on_hand',      names: ['stock on hand'] },
 ];
 // Fallback keyword groups — used only if no sheet in the workbook
 // matched exactly by name above. All keywords in a group must appear as
@@ -1917,6 +1918,7 @@ var SOA_SHEET_FALLBACK = [
   { type: 'tcs_reimbursement',  any: [['tcs']] },
   { type: 'pending_settlement', any: [['settlement']] },
   { type: 'payout_breakup',     any: [['payout']] },
+  { type: 'stock_on_hand',      any: [['stock', 'hand']] },
 ];
 
 function soaNormText_(s) { return String(s == null ? '' : s).toLowerCase().trim().replace(/\s+/g, ' '); }
@@ -2259,6 +2261,58 @@ function soaExtractPayoutBreakup_(rows) {
   return totals;
 }
 
+// Blinkit's "Stock On Hand" inventory export — a single sheet, no per-row
+// date (Blinkit stamps a "This sheet was generated at <date> <time>" note in
+// the very first cell instead), one row per warehouse x item combination.
+// Pushes plain objects (not the dailyFees/cashLedger bucket-map shape used
+// elsewhere) since inventory_snapshots rows don't accumulate across
+// files/dates the way fees do — each row already IS one full snapshot row.
+function soaExtractStockOnHand_(rows, inventoryRows) {
+  var hdr = soaFindHeaderRow_(rows, [['itemid'], ['totalsellable']]);
+  if (!hdr) return 0;
+
+  var snapshotDate = '';
+  for (var i = 0; i < Math.min(rows.length, 3); i++) {
+    var cell0 = String((rows[i] || [])[0] || '');
+    var m = cell0.match(/generated at (\d{4}-\d{2}-\d{2})/i);
+    if (m) { snapshotDate = m[1]; break; }
+  }
+  if (!snapshotDate) snapshotDate = fmtD(new Date());
+
+  var colIx = hdr.colIx, n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var itemId = soaCell_(row, colIx, ['itemid']);
+    var facilityId = soaCell_(row, colIx, ['warehousefacilityid']);
+    if (!itemId || !facilityId) continue;
+    inventoryRows.push({
+      snapshot_date: snapshotDate,
+      warehouse_id: String(facilityId).trim(),
+      warehouse_name: String(soaCell_(row, colIx, ['warehousefacilityname']) || '').trim(),
+      sku_id: String(itemId).trim(),
+      sellable: soaNum_(soaCell_(row, colIx, ['totalsellable'])),
+      unsellable: soaNum_(soaCell_(row, colIx, ['totalunsellable'])),
+      damaged: soaNum_(soaCell_(row, colIx, ['damaged'])),
+      lost: soaNum_(soaCell_(row, colIx, ['lost'])),
+      near_expiry: soaNum_(soaCell_(row, colIx, ['nearexpiry'])),
+      sold_7d: soaNum_(soaCell_(row, colIx, ['last7days'])),
+      sold_15d: soaNum_(soaCell_(row, colIx, ['last15days'])),
+      sold_30d: soaNum_(soaCell_(row, colIx, ['last30days'])),
+    });
+    n++;
+  }
+  return n;
+}
+function soaInventoryRowsToCsv_(inventoryRows, sourceLabel) {
+  var lines = ['snapshot_date,warehouse_id,warehouse_name,sku_id,sellable,unsellable,damaged,lost,near_expiry,sold_7d,sold_15d,sold_30d,source'];
+  inventoryRows.forEach(function(r) {
+    lines.push([r.snapshot_date, r.warehouse_id, r.warehouse_name, r.sku_id, r.sellable, r.unsellable,
+      r.damaged, r.lost, r.near_expiry, r.sold_7d, r.sold_15d, r.sold_30d, sourceLabel].map(soaCsvField_).join(','));
+  });
+  return { csv: lines.join('\n'), rowCount: inventoryRows.length };
+}
+
 // Auto-detects which of OUR OWN sheet tabs a file's header row matches, so
 // files that are already shaped like one of our tabs (e.g. a pre-built
 // daily_sales_2026-03.csv) route there with no manual "Target tab" picking.
@@ -2311,6 +2365,7 @@ function soaAggregateFiles_(files) {
   var cashLedger = [];
   var salesRows = []; // raw rows shaped like Blinkit's native Sales Report export — see soaExtractOrders_
   var payoutBreakupTotals = null;
+  var inventoryRows = []; // one object per warehouse x item row — see soaExtractStockOnHand_
   var fileReport = [];
   // Sheets that don't match a known Blinkit SOA sheet name still get a
   // second chance here: if their header row matches one of our OWN tab
@@ -2367,6 +2422,7 @@ function soaAggregateFiles_(files) {
             if (!payoutBreakupTotals) payoutBreakupTotals = soaExtractPayoutBreakup_(rows);
             n = payoutBreakupTotals ? 1 : 0;
           }
+          else if (type === 'stock_on_hand') n = soaExtractStockOnHand_(rows, inventoryRows);
           // ageing_reversal / note: recognised, intentionally not extracted (n stays 0)
           detected.push({ sheet: sheetName, type: type, rows: n });
         } catch (sheetErr) {
@@ -2379,7 +2435,7 @@ function soaAggregateFiles_(files) {
     }
   });
 
-  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, fileReport: fileReport, plainImports: plainImports };
+  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, inventoryRows: inventoryRows, fileReport: fileReport, plainImports: plainImports };
 }
 
 // Converts the plainImports accumulator from soaAggregateFiles_ into one
@@ -2610,8 +2666,10 @@ function renderImport(el) {
     var cash = soaCashLedgerToCsv_(result.cashLedger, sourceLabel);
     var salesCsv = result.salesRows.length ? soaSalesRowsToCsv_(result.salesRows) : '';
     var plainCsvs = soaPlainImportsToCsvs_(result.plainImports || {});
+    var inv = soaInventoryRowsToCsv_(result.inventoryRows || [], 'blinkit-stock-on-hand');
     soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, cashCsv: cash.csv, cashRows: cash.rowCount,
-      salesCsv: salesCsv, salesRowCount: result.salesRows.length, plainCsvs: plainCsvs };
+      salesCsv: salesCsv, salesRowCount: result.salesRows.length, plainCsvs: plainCsvs,
+      invCsv: inv.csv, invRows: inv.rowCount };
 
     // Units / gross bill amount straight from the order-line rows, shown
     // up front so it can be checked directly against a manual sum of the
@@ -2671,10 +2729,11 @@ function renderImport(el) {
     var plainSummary = plainTargets.length
       ? ', plus ' + plainTargets.map(function(t) { return '<b>' + plainCsvs[t].rowCount + ' row(s)</b> for <code class="inline">' + t + '</code>'; }).join(', ')
       : '';
-    var importDisabled = fees.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length;
+    var importDisabled = fees.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length && inv.rowCount === 0;
     var resultHtml = '<div class="alert ' + (errorCount ? 'medium' : 'low') + '"><div class="sev">Processed</div><div class="msg">' +
       '<b>' + fees.rowCount + ' day(s) of daily_fees</b> ready' + (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') +
       (result.salesRows.length ? ', plus <b>' + result.salesRows.length + ' order line(s)</b> for daily_sales' : '') +
+      (inv.rowCount ? ', plus <b>' + inv.rowCount + ' warehouse/SKU row(s)</b> for inventory_snapshots' : '') +
       plainSummary + '.' +
       salesSummaryHtml +
       reportHtml + reconHtml +
@@ -2734,6 +2793,14 @@ function renderImport(el) {
       }
       return { feesResult: both.feesResult, cashResult: both.cashResult, salesResult: null };
     }).then(function(all) {
+      if (soaLastResult.invRows > 0) {
+        return api('importCsv', {
+          target: 'inventory_snapshots', csv: soaLastResult.invCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-stock-on-hand' }
+        }, 'POST').then(function(invResult) { return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, invResult: invResult }; });
+      }
+      return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, invResult: null };
+    }).then(function(all) {
       // Any sheets that matched one of our own tab schemas directly
       // (plainCsvs — e.g. a pre-built daily_sales_2026-03.csv dropped in
       // alongside or instead of a real SOA folder) import one at a time,
@@ -2749,11 +2816,11 @@ function renderImport(el) {
         });
       });
       return chain.then(function(plainResults) {
-        return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, plainResults: plainResults };
+        return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, invResult: all.invResult, plainResults: plainResults };
       });
     }).then(function(all) {
-      var f = all.feesResult, c = all.cashResult, s = all.salesResult, plains = all.plainResults || [];
-      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!s || s.ok !== false) &&
+      var f = all.feesResult, c = all.cashResult, s = all.salesResult, iv = all.invResult, plains = all.plainResults || [];
+      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!s || s.ok !== false) && (!iv || iv.ok !== false) &&
         plains.every(function(p) { return p.result.ok !== false; });
       var status = ok
         ? '<div style="color:#15803d;font-weight:600">✓ Imported successfully.</div>'
@@ -2767,6 +2834,9 @@ function renderImport(el) {
           (s.added + ' added, ' + s.updated + ' updated, ' + s.skipped_duplicate + ' dup skipped' +
            ((s.auto_created_cities && s.auto_created_cities.length) ? ', ' + s.auto_created_cities.length + ' new city/cities' : '') +
            ((s.auto_created_skus && s.auto_created_skus.length) ? ', ' + s.auto_created_skus.length + ' new SKU(s)' : ''))) + '</div>' : '') +
+        (iv ? '<div style="margin-top:4px"><b>inventory_snapshots:</b> ' + (iv.ok === false ? escapeHtml(iv.error || 'failed') :
+          (iv.added + ' added, ' + iv.updated + ' updated, ' + iv.skipped_duplicate + ' dup skipped' +
+           ((iv.auto_created_warehouses && iv.auto_created_warehouses.length) ? ', ' + iv.auto_created_warehouses.length + ' new warehouse(s) — verify their city in Master Data' : ''))) + '</div>' : '') +
         plains.map(function(p) {
           var r = p.result;
           return '<div style="margin-top:4px"><b>' + escapeHtml(p.target) + ':</b> ' + (r.ok === false ? escapeHtml(r.error || 'failed') :
