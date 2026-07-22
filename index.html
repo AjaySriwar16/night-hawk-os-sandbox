@@ -2127,7 +2127,15 @@ function soaExtractDailyAgeing_(rows, dailyFees, unassigned, sourceLabel) {
   return n;
 }
 function soaExtractLostDamaged_(rows, dailyFees, unassigned, sourceLabel) {
-  var hdr = soaFindHeaderRow_(rows, [['itemid'], ['applicablecompensationminoftwo']]);
+  // Blinkit has at least two Lost Damaged export layouts: an older, simpler
+  // one with only 'Total Compensation Amount', and a newer, more detailed
+  // one that adds 'Applicable Compensation (Min of two)' alongside it.
+  // Requiring only the newer column name meant the simpler layout's header
+  // row was never recognised at all — the whole sheet silently contributed
+  // ₹0 to lost_damaged instead of erroring or partially matching, found via
+  // a real Payout Breakup reconciliation mismatch (₹0 vs ₹1,038) on an
+  // August 2025 file that only has the simpler layout.
+  var hdr = soaFindHeaderRow_(rows, [['itemid'], ['applicablecompensationminoftwo', 'totalcompensationamount']]);
   if (!hdr) return 0;
   var colIx = hdr.colIx, n = 0;
   for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
