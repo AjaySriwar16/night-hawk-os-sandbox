@@ -2259,6 +2259,46 @@ function soaExtractPayoutBreakup_(rows) {
   return totals;
 }
 
+// Auto-detects which of OUR OWN sheet tabs a file's header row matches, so
+// files that are already shaped like one of our tabs (e.g. a pre-built
+// daily_sales_2026-03.csv) route there with no manual "Target tab" picking.
+// Each signature is that tab's own header row shape (mirrors REQUIRED_SCHEMA_
+// in the backend, plus each tab's own *_id column, which is the strongest
+// single signal since it's unique per tab). Module-scope (not inside
+// renderImport) so soaAggregateFiles_ below can use it too — a file that
+// isn't a recognised Blinkit SOA sheet still gets a chance to match one of
+// these before being reported as unrecognised.
+var IMPORT_TARGET_SIGNATURES_ = {
+  daily_sales:         ['sales_id', 'date', 'platform_id', 'city_id', 'sku_id', 'units', 'value'],
+  daily_fees:          ['fee_id', 'date', 'platform_id', 'storage_fee', 'shipping_fee', 'commission_fee', 'tds', 'lost_damaged'],
+  daily_ad_spend:      ['ad_id', 'date', 'platform_id', 'city_id', 'sku_id', 'amount'],
+  inventory_snapshots: ['snapshot_id', 'snapshot_date', 'warehouse_id', 'sku_id', 'sellable', 'unsellable', 'near_expiry', 'sold_7d', 'sold_15d', 'sold_30d'],
+  complaints_returns:  ['date', 'platform_id', 'sku_id', 'type', 'units', 'reason'],
+  expansion_plan:      ['expansion_id', 'sku_id', 'city_id', 'status'],
+  monthly_budget:      ['budget_id', 'month', 'line_item', 'amount'],
+  monthly_forecast:    ['forecast_id', 'month', 'metric', 'forecast_value'],
+  cash_ledger:         ['entry_id', 'date', 'type', 'amount', 'category'],
+};
+function detectImportTarget_(headerCells) {
+  var norm = headerCells.map(function(h) { return String(h || '').trim().toLowerCase(); });
+  var best = null, bestScore = 0;
+  Object.keys(IMPORT_TARGET_SIGNATURES_).forEach(function(target) {
+    var sig = IMPORT_TARGET_SIGNATURES_[target];
+    var matched = sig.filter(function(col) { return norm.indexOf(col) !== -1; }).length;
+    var score = matched / sig.length;
+    // The *_id column (sig[0] for every target here) is unique per tab —
+    // seeing it is a near-certain signal, so it outweighs partial overlap
+    // on the more generic columns (date/platform_id/amount, etc. show up
+    // in several tabs' signatures).
+    if (norm.indexOf(sig[0]) !== -1) score += 1;
+    if (score > bestScore) { bestScore = score; best = target; }
+  });
+  // Require at least the id column match (score > 1) or near-complete
+  // overlap of a signature with no id column — otherwise leave it
+  // unmatched rather than guessing on a weak/generic overlap.
+  return bestScore >= 1 ? best : null;
+}
+
 // Main orchestrator. `files` is an array of {name, workbook} already
 // parsed by XLSX.read (parsing happens in the click handler so this stays
 // synchronous/pure and unit-testable). Returns a report + aggregated
@@ -2272,6 +2312,15 @@ function soaAggregateFiles_(files) {
   var salesRows = []; // raw rows shaped like Blinkit's native Sales Report export — see soaExtractOrders_
   var payoutBreakupTotals = null;
   var fileReport = [];
+  // Sheets that don't match a known Blinkit SOA sheet name still get a
+  // second chance here: if their header row matches one of our OWN tab
+  // schemas (e.g. a plain daily_sales_2026-03.csv dropped in alongside a
+  // real SOA folder, or by itself), the whole sheet is queued for a direct,
+  // ordinary column-mapped import instead of being ignored. Keyed by
+  // target tab; each entry accumulates {header, rows} across every file/
+  // sheet that matched that same target, so multiple matching sheets merge
+  // into one CSV per target.
+  var plainImports = {};
 
   files.forEach(function(f) {
     if (f.error) { fileReport.push({ name: f.name, status: 'error', message: f.error }); return; }
@@ -2280,7 +2329,27 @@ function soaAggregateFiles_(files) {
       var wb = f.workbook;
       (wb.SheetNames || []).forEach(function(sheetName) {
         var type = soaClassifySheet_(sheetName);
-        if (!type) return;
+        if (!type) {
+          try {
+            var plainRows = soaSheetRows_(wb.Sheets[sheetName]);
+            var plainHeader = plainRows[0];
+            var plainTarget = plainHeader ? detectImportTarget_(plainHeader) : null;
+            if (plainTarget) {
+              if (!plainImports[plainTarget]) plainImports[plainTarget] = { header: plainHeader, rows: [] };
+              var addedRows = 0;
+              plainRows.slice(1).forEach(function(r) {
+                if (r && r.some(function(c) { return c !== '' && c != null; })) {
+                  plainImports[plainTarget].rows.push(r);
+                  addedRows++;
+                }
+              });
+              detected.push({ sheet: sheetName, type: 'plain:' + plainTarget, rows: addedRows });
+            }
+          } catch (plainErr) {
+            // Not a fatal problem — this sheet just stays unrecognised.
+          }
+          return;
+        }
         var label = f.name + ' → ' + sheetName;
         try {
           var rows = soaSheetRows_(wb.Sheets[sheetName]);
@@ -2310,7 +2379,22 @@ function soaAggregateFiles_(files) {
     }
   });
 
-  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, fileReport: fileReport };
+  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, fileReport: fileReport, plainImports: plainImports };
+}
+
+// Converts the plainImports accumulator from soaAggregateFiles_ into one
+// CSV string per target tab, preserving the original header row exactly
+// (these sheets already match one of our own schemas, so the header names
+// are already correct column names — no column-mapping needed downstream).
+function soaPlainImportsToCsvs_(plainImports) {
+  var out = {};
+  Object.keys(plainImports).forEach(function(target) {
+    var entry = plainImports[target];
+    var lines = [entry.header.map(soaCsvField_).join(',')];
+    entry.rows.forEach(function(r) { lines.push(r.map(soaCsvField_).join(',')); });
+    out[target] = { csv: lines.join('\n'), rowCount: entry.rows.length };
+  });
+  return out;
 }
 
 // Turns the collected raw order-line rows into a CSV shaped exactly like
@@ -2366,226 +2450,101 @@ function Utilities_yyyymm_() { var d = new Date(); return d.getFullYear() + Stri
 function renderImport(el) {
   el.innerHTML =
     '<div class="panel"><h2>Import data</h2>' +
-    '<div class="desc">Upload a CSV or Excel file (or paste CSV text). The importer understands Blinkit\'s native column names (Item ID, Warehouse Facility ID, Last 7 days, etc.) and auto-translates Blinkit IDs to your internal IDs. It also de-duplicates by default so you can re-import the same month safely.</div>' +
+    '<div class="desc">Upload whatever Blinkit gave you — a full monthly SOA/payout folder (Payout Breakup, Forward Orders, Storage Charges, etc), a single Blinkit export, or one of this app\'s own CSVs. Everything is read in your browser and routed to the right place automatically by matching sheet names and column headers — there\'s nothing to pick by hand. Re-uploading a month always corrects it in place rather than creating duplicates.</div>' +
 
-    // Duplicate handling + Dry run apply to every import mode, including
-    // the SOA multi-file tab (runSoaImport reads both) \u2014 kept in their
-    // own always-visible row, separate from Target tab/Defaults below
-    // (which the SOA tab drives itself and hides). Previously these were
-    // bundled into the same hideable row, which meant there was no way
-    // to reach "Replace duplicates" while on the SOA tab at all.
-    '<div id="imp-dedupe-dryrun-row" style="margin-bottom:14px;max-width:340px">' +
-      '<label class="muted" style="display:block;margin-bottom:4px">Duplicate handling</label>' +
-      '<select id="imp-dedupe" style="padding:8px 10px;border:1px solid var(--nh-gray-line);border-radius:6px;display:block;width:100%">' +
-        '<option value="skip" selected>Skip duplicates (safe, recommended)</option>' +
-        '<option value="replace">Replace duplicates (use for corrections)</option>' +
-        '<option value="append">Append all (no de-dup, may create duplicates)</option>' +
-      '</select>' +
-      '<div style="margin-top:10px">' +
-        '<label style="font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer">' +
-          '<input type="checkbox" id="imp-dryrun"> Dry run \u2014 count only, don\'t write' +
-        '</label>' +
-      '</div>' +
-    '</div>' +
-    '<div id="imp-target-defaults-row" class="two-col" style="align-items:start;margin-bottom:14px">' +
-      '<div>' +
-        '<label class="muted" style="display:block;margin-bottom:4px">Target tab</label>' +
-        '<select id="imp-target" style="padding:8px 10px;border:1px solid var(--nh-gray-line);border-radius:6px;display:block;width:100%">' +
-          '<option>daily_sales</option><option>daily_fees</option><option>daily_ad_spend</option>' +
-          '<option>inventory_snapshots</option><option>complaints_returns</option>' +
-          '<option>expansion_plan</option><option>monthly_budget</option><option>monthly_forecast</option>' +
-          '<option>cash_ledger</option>' +
-        '</select>' +
-        '<div id="imp-target-auto" class="muted" style="font-size:11px;margin-top:4px"></div>' +
-      '</div>' +
-      '<div>' +
-        '<label class="muted" style="display:block;margin-bottom:4px">Defaults (used for empty/missing fields)</label>' +
-        '<div id="imp-defaults" style="display:flex;flex-direction:column;gap:6px"></div>' +
-        '<div class="muted" style="font-size:11px;margin-top:6px">These values fill in for rows where the column is missing or empty. e.g. if your Blinkit XLSX doesn\'t have a snapshot_date column, enter the date here.</div>' +
-      '</div>' +
-    '</div>' +
 
     '<div style="display:flex;gap:0;border-bottom:1px solid var(--nh-gray-line);margin-bottom:14px">' +
-      '<button id="imp-mode-upload" type="button" style="padding:9px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px">\u2B06 Upload file</button>' +
+      '<button id="imp-mode-upload" type="button" style="padding:9px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px">\u2B06 Upload files</button>' +
       '<button id="imp-mode-paste" type="button" style="padding:9px 16px;border:1px solid var(--nh-gray-line);border-bottom:0;background:#fff;color:var(--nh-navy);border-radius:6px 6px 0 0;cursor:pointer;font-size:13px;margin-left:4px">Paste CSV</button>' +
-      '<button id="imp-mode-soa" type="button" style="padding:9px 16px;border:1px solid var(--nh-gray-line);border-bottom:0;background:#fff;color:var(--nh-navy);border-radius:6px 6px 0 0;cursor:pointer;font-size:13px;margin-left:4px">\uD83D\uDCC1 Blinkit Monthly SOA</button>' +
     '</div>' +
-    // Upload panel
+    // Upload panel \u2014 one multi-file input handles everything: a whole SOA
+    // folder, a single Blinkit export, or plain CSVs already shaped like
+    // one of this app's own tabs. soaAggregateFiles_ (above) sorts out
+    // which is which per file/sheet \u2014 nothing to pick by hand.
     '<div id="imp-upload-panel">' +
-      '<label class="muted" style="display:block;margin-bottom:6px">Pick a file (CSV, XLSX, or XLS)</label>' +
-      '<input type="file" id="imp-file" accept=".csv,.xlsx,.xls,text/csv" style="margin-bottom:4px">' +
-      '<div class="muted" style="font-size:11px">Tip: if you exported from Blinkit as XLSX, you can upload it directly \u2014 the app will convert it to CSV in your browser and send only rows to the sheet.</div>' +
-      '<div id="imp-sheet-picker" class="hidden" style="margin-top:12px">' +
-        '<label class="muted" style="display:block;margin-bottom:4px">This Excel file has multiple sheets \u2014 pick one</label>' +
-        '<select id="imp-sheet-sel" style="padding:7px;border:1px solid var(--nh-gray-line);border-radius:6px;min-width:220px"></select>' +
-      '</div>' +
-      '<div id="imp-preview" style="margin-top:14px"></div>' +
-    '</div>' +
-    // Paste panel
-    '<div id="imp-paste-panel" class="hidden">' +
-      '<label class="muted" style="display:block;margin-bottom:6px">Paste CSV below (first row = headers)</label>' +
-      '<textarea id="imp-csv" style="width:100%;min-height:200px;font-family:Menlo,monospace;font-size:12px;padding:8px;border:1px solid var(--nh-gray-line);border-radius:6px" placeholder="date,platform_id,city_id,sku_id,units,value\n2026-04-15,PLT-001,CTY-002,SKU-001,5,390"></textarea>' +
-    '</div>' +
-    // Blinkit Monthly SOA (multi-file) panel
-    '<div id="imp-soa-panel" class="hidden">' +
-      '<div class="desc" style="margin-top:0">Select every file from Blinkit\'s monthly SOA / payout folder at once (Payout Breakup, Forward Orders, Storage Charges, Lost Damaged, Courier Charge, etc — whatever Blinkit gave you). Each file is read in your browser, matched by its sheet names, and combined into one month of <code class="inline">daily_fees</code> rows (plus <code class="inline">cash_ledger</code> entries for credit notes / reimbursements, if any). Works the same way every month — no changes needed as your Blinkit exports keep the same template.</div>' +
-      '<label class="muted" style="display:block;margin:10px 0 6px">Pick all files in the SOA folder (multi-select)</label>' +
-      '<input type="file" id="imp-soa-files" accept=".xlsx,.xls" multiple>' +
+      '<label class="muted" style="display:block;margin-bottom:6px">Pick one or more files (CSV, XLSX, or XLS) \u2014 select the whole folder at once if you have one</label>' +
+      '<input type="file" id="imp-soa-files" accept=".csv,.xlsx,.xls" multiple>' +
       '<div style="margin-top:10px">' +
         '<button id="imp-soa-process" type="button" style="padding:8px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px" disabled>Process files</button>' +
       '</div>' +
       '<div id="imp-soa-report" style="margin-top:14px"></div>' +
       '<div id="imp-soa-result" style="margin-top:14px"></div>' +
     '</div>' +
-    '<div id="imp-generic-footer" style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;gap:8px">' +
-      '<div id="imp-summary" class="muted"></div>' +
-      '<button id="imp-run" style="padding:9px 18px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px" disabled>Import</button>' +
+    // Paste panel \u2014 kept as a lightweight manual fallback (quick
+    // one-off corrections without a file). Target tab is auto-detected
+    // from the pasted header row, same as uploads; no dropdown to pick.
+    '<div id="imp-paste-panel" class="hidden">' +
+      '<label class="muted" style="display:block;margin-bottom:6px">Paste CSV below (first row = headers, matching one of this app\'s tabs — e.g. <code class="inline">date,platform_id,city_id,sku_id,units,value</code>)</label>' +
+      '<textarea id="imp-csv" style="width:100%;min-height:200px;font-family:Menlo,monospace;font-size:12px;padding:8px;border:1px solid var(--nh-gray-line);border-radius:6px" placeholder="date,platform_id,city_id,sku_id,units,value\n2026-04-15,PLT-001,CTY-002,SKU-001,5,390"></textarea>' +
+      '<div id="imp-paste-target" class="muted" style="font-size:11px;margin-top:6px"></div>' +
+      '<div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+        '<div id="imp-paste-summary" class="muted"></div>' +
+        '<button id="imp-paste-run" style="padding:9px 18px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px" disabled>Import</button>' +
+      '</div>' +
+      '<div id="imp-paste-out" style="margin-top:14px"></div>' +
     '</div>' +
-    '<div id="imp-out" style="margin-top:14px"></div></div>';
+    '</div>';
 
-  var currentCsv = '';
   var currentMode = 'upload';
-  var parsedWorkbook = null;
 
-  // Auto-detects which sheet tab an uploaded file belongs to, so picking
-  // "Target tab" by hand is only needed when the file's headers don't
-  // clearly match any tab (e.g. a raw Blinkit export, which still goes
-  // through the existing alias-based column mapper after this). Each
-  // signature is that tab's own header row shape (mirrors REQUIRED_SCHEMA_
-  // in the backend, plus each tab's own *_id column, which is the
-  // strongest single signal since it's unique per tab).
-  var IMPORT_TARGET_SIGNATURES_ = {
-    daily_sales:         ['sales_id', 'date', 'platform_id', 'city_id', 'sku_id', 'units', 'value'],
-    daily_fees:          ['fee_id', 'date', 'platform_id', 'storage_fee', 'shipping_fee', 'commission_fee', 'tds', 'lost_damaged'],
-    daily_ad_spend:      ['ad_id', 'date', 'platform_id', 'city_id', 'sku_id', 'amount'],
-    inventory_snapshots: ['snapshot_id', 'snapshot_date', 'warehouse_id', 'sku_id', 'sellable', 'unsellable', 'near_expiry', 'sold_7d', 'sold_15d', 'sold_30d'],
-    complaints_returns:  ['date', 'platform_id', 'sku_id', 'type', 'units', 'reason'],
-    expansion_plan:      ['expansion_id', 'sku_id', 'city_id', 'status'],
-    monthly_budget:      ['budget_id', 'month', 'line_item', 'amount'],
-    monthly_forecast:    ['forecast_id', 'month', 'metric', 'forecast_value'],
-    cash_ledger:         ['entry_id', 'date', 'type', 'amount', 'category'],
-  };
-  function detectImportTarget_(headerCells) {
-    var norm = headerCells.map(function(h) { return String(h || '').trim().toLowerCase(); });
-    var best = null, bestScore = 0;
-    Object.keys(IMPORT_TARGET_SIGNATURES_).forEach(function(target) {
-      var sig = IMPORT_TARGET_SIGNATURES_[target];
-      var matched = sig.filter(function(col) { return norm.indexOf(col) !== -1; }).length;
-      var score = matched / sig.length;
-      // The *_id column (sig[0] for every target here) is unique per tab —
-      // seeing it is a near-certain signal, so it outweighs partial overlap
-      // on the more generic columns (date/platform_id/amount, etc. show up
-      // in several tabs' signatures).
-      if (norm.indexOf(sig[0]) !== -1) score += 1;
-      if (score > bestScore) { bestScore = score; best = target; }
-    });
-    // Require at least the id column match (score > 1) or near-complete
-    // overlap of a signature with no id column (complaints_returns/
-    // daily_ad_spend-without-ad_id) — otherwise leave it for the user to
-    // pick, rather than guessing on a weak/generic match.
-    return bestScore >= 1 ? best : null;
-  }
-
-  // Target-specific default-value fields
-  var DEFAULTS_FIELDS = {
-    inventory_snapshots: [
-      { id: 'def-snapshot-date', label: 'Snapshot date', col: 'snapshot_date', type: 'date',
-        help: 'Blinkit inventory exports don\'t include a per-row date. Set the date this snapshot was taken.' }
-    ],
-    daily_sales:    [{ id: 'def-plat', label: 'Platform', col: 'platform_id', type: 'platform', help: 'Used if platform_id column is missing.' }],
-    daily_fees:     [{ id: 'def-plat', label: 'Platform', col: 'platform_id', type: 'platform', help: 'Used if platform_id column is missing.' }],
-    daily_ad_spend: [{ id: 'def-plat', label: 'Platform', col: 'platform_id', type: 'platform', help: 'Used if platform_id column is missing.' }],
-    complaints_returns: [{ id: 'def-plat', label: 'Platform', col: 'platform_id', type: 'platform', help: 'Used if platform_id column is missing.' }],
-  };
-
-  function renderDefaultsFields() {
-    var target = $('imp-target').value;
-    var fields = DEFAULTS_FIELDS[target] || [];
-    var platforms = (state.boot.platforms || []).filter(function(p){return p.status==='active';});
-    var todayStr = (new Date()).toISOString().slice(0, 10);
-    $('imp-defaults').innerHTML = fields.length ? fields.map(function(f) {
-      var inputHtml = '';
-      if (f.type === 'date') {
-        inputHtml = '<input id="' + f.id + '" type="date" value="' + todayStr + '" style="padding:7px;border:1px solid var(--nh-gray-line);border-radius:6px;width:100%">';
-      } else if (f.type === 'platform') {
-        inputHtml = '<select id="' + f.id + '" style="padding:7px;border:1px solid var(--nh-gray-line);border-radius:6px;width:100%">' +
-          (platforms.length ? platforms.map(function(p){return '<option value="'+escapeHtml(p.platform_id)+'">'+escapeHtml(p.name)+'</option>';}).join('')
-            : '<option value="PLT-001">Blinkit</option>') +
-          '</select>';
-      } else {
-        inputHtml = '<input id="' + f.id + '" type="text" style="padding:7px;border:1px solid var(--nh-gray-line);border-radius:6px;width:100%">';
-      }
-      return '<div>' +
-             '<label class="muted" style="font-size:11px;display:block;margin-bottom:2px">' + escapeHtml(f.label) + '</label>' +
-             inputHtml +
-             (f.help ? '<div class="muted" style="font-size:10px;margin-top:2px">' + escapeHtml(f.help) + '</div>' : '') +
-             '</div>';
-    }).join('') : '<div class="muted" style="font-size:12px">No defaults required for this target.</div>';
-  }
-
-  function collectDefaults() {
-    var target = $('imp-target').value;
-    var fields = DEFAULTS_FIELDS[target] || [];
+  // Silent per-target defaults (platform_id, snapshot_date) — no dropdown,
+  // no manual entry. Only used to fill columns the sheet itself doesn't
+  // carry (e.g. Blinkit inventory exports have no per-row date).
+  function autoDefaultsFor(target) {
     var out = {};
-    fields.forEach(function(f) {
-      var v = $(f.id) ? $(f.id).value : '';
-      if (v) out[f.col] = v;
-    });
+    var platforms = (state.boot.platforms || []).filter(function(p){return p.status==='active';});
+    var blinkit = platforms.find(function(p){return /blinkit/i.test(p.name || '');});
+    var plat = (blinkit || platforms[0] || {}).platform_id || 'PLT-001';
+    if (['daily_sales','daily_fees','daily_ad_spend','complaints_returns'].indexOf(target) !== -1) {
+      out.platform_id = plat;
+    }
+    if (target === 'inventory_snapshots') {
+      out.snapshot_date = (new Date()).toISOString().slice(0, 10);
+    }
     return out;
   }
-
-  $('imp-target').addEventListener('change', function() { renderDefaultsFields(); updateRunState(); });
-  renderDefaultsFields();
 
   function setMode(mode) {
     currentMode = mode;
     $('imp-upload-panel').classList.toggle('hidden', mode !== 'upload');
     $('imp-paste-panel').classList.toggle('hidden', mode !== 'paste');
-    $('imp-soa-panel').classList.toggle('hidden', mode !== 'soa');
-    // The SOA flow drives its own targets (daily_fees + cash_ledger) and
-    // has its own process/import button — hide the generic target picker
-    // and Import footer while it's active so there's nothing unused/
-    // confusing on screen.
-    $('imp-target-defaults-row').classList.toggle('hidden', mode === 'soa');
-    $('imp-generic-footer').classList.toggle('hidden', mode === 'soa');
-    var tu = $('imp-mode-upload'), tp = $('imp-mode-paste'), ts = $('imp-mode-soa');
+    var tu = $('imp-mode-upload'), tp = $('imp-mode-paste');
     var activeStyle = 'padding:9px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px 6px 0 0;cursor:pointer;font-size:13px';
     var inactiveStyle = 'padding:9px 16px;border:1px solid var(--nh-gray-line);border-bottom:0;background:#fff;color:var(--nh-navy);border-radius:6px 6px 0 0;cursor:pointer;font-size:13px';
-    [[tu,'upload'],[tp,'paste'],[ts,'soa']].forEach(function(pair) {
+    [[tu,'upload'],[tp,'paste']].forEach(function(pair) {
       pair[0].setAttribute('style', (pair[1] === mode ? activeStyle : inactiveStyle) + ';margin-left:4px');
     });
     updateRunState();
   }
-  function csvForSubmit() {
-    return currentMode === 'upload' ? currentCsv : $('imp-csv').value;
-  }
+
+  // Target tab is auto-detected from the pasted header row — nothing to
+  // pick by hand. Kept on the instance so the click handler below doesn't
+  // have to re-run detection.
+  var pasteDetectedTarget = null;
   function updateRunState() {
-    var csv = csvForSubmit();
+    var csv = $('imp-csv').value;
     var rowCount = 0;
+    pasteDetectedTarget = null;
     if (csv && csv.trim()) {
       var lines = csv.split(/\r?\n/).filter(function(l){return l.trim().length;});
       rowCount = Math.max(0, lines.length - 1);
-      // Upload mode already auto-detects in renderPreview (has a nicer
-      // label/preview to hang the note on) — this covers Paste CSV, which
-      // has no separate preview step of its own.
-      if (currentMode === 'paste' && lines.length) {
-        var detected = detectImportTarget_(splitCsvLinePreview(lines[0]));
-        if (detected) {
-          $('imp-target').value = detected;
-          renderDefaultsFields();
-          $('imp-target-auto').textContent = '✓ Auto-detected from column headers — change the dropdown above if this looks wrong.';
-        } else {
-          $('imp-target-auto').textContent = '';
-        }
+      if (lines.length) {
+        pasteDetectedTarget = detectImportTarget_(splitCsvLinePreview(lines[0]));
       }
     }
-    $('imp-run').disabled = rowCount === 0;
-    $('imp-summary').textContent = rowCount > 0 ? ('Ready to import ' + rowCount + ' row' + (rowCount===1?'':'s')) : '';
+    if (!csv || !csv.trim()) {
+      $('imp-paste-target').textContent = '';
+    } else if (pasteDetectedTarget) {
+      $('imp-paste-target').textContent = '✓ Detected as ' + pasteDetectedTarget + '.';
+    } else {
+      $('imp-paste-target').textContent = '✗ Could not match these columns to any tab in this app — check the header row.';
+    }
+    $('imp-paste-run').disabled = rowCount === 0 || !pasteDetectedTarget;
+    $('imp-paste-summary').textContent = (rowCount > 0 && pasteDetectedTarget) ? ('Ready to import ' + rowCount + ' row' + (rowCount===1?'':'s')) : '';
   }
 
   $('imp-mode-upload').addEventListener('click', function() { setMode('upload'); });
   $('imp-mode-paste').addEventListener('click', function() { setMode('paste'); });
-  $('imp-mode-soa').addEventListener('click', function() { setMode('soa'); });
 
   // ---- Blinkit Monthly SOA (multi-file) wiring ----
   var soaSelectedFiles = [];
@@ -2650,8 +2609,9 @@ function renderImport(el) {
     var fees = soaDailyFeesToCsv_(result.dailyFees, platformId, sourceLabel);
     var cash = soaCashLedgerToCsv_(result.cashLedger, sourceLabel);
     var salesCsv = result.salesRows.length ? soaSalesRowsToCsv_(result.salesRows) : '';
+    var plainCsvs = soaPlainImportsToCsvs_(result.plainImports || {});
     soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, cashCsv: cash.csv, cashRows: cash.rowCount,
-      salesCsv: salesCsv, salesRowCount: result.salesRows.length };
+      salesCsv: salesCsv, salesRowCount: result.salesRows.length, plainCsvs: plainCsvs };
 
     // Units / gross bill amount straight from the order-line rows, shown
     // up front so it can be checked directly against a manual sum of the
@@ -2707,10 +2667,15 @@ function renderImport(el) {
         '</div>'
       : '';
 
-    var importDisabled = fees.rowCount === 0 && result.salesRows.length === 0;
+    var plainTargets = Object.keys(plainCsvs);
+    var plainSummary = plainTargets.length
+      ? ', plus ' + plainTargets.map(function(t) { return '<b>' + plainCsvs[t].rowCount + ' row(s)</b> for <code class="inline">' + t + '</code>'; }).join(', ')
+      : '';
+    var importDisabled = fees.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length;
     var resultHtml = '<div class="alert ' + (errorCount ? 'medium' : 'low') + '"><div class="sev">Processed</div><div class="msg">' +
       '<b>' + fees.rowCount + ' day(s) of daily_fees</b> ready' + (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') +
-      (result.salesRows.length ? ', plus <b>' + result.salesRows.length + ' order line(s)</b> for daily_sales' : '') + '.' +
+      (result.salesRows.length ? ', plus <b>' + result.salesRows.length + ' order line(s)</b> for daily_sales' : '') +
+      plainSummary + '.' +
       salesSummaryHtml +
       reportHtml + reconHtml +
       '</div></div>' +
@@ -2728,22 +2693,30 @@ function renderImport(el) {
 
   function runSoaImport() {
     if (!soaLastResult) return;
-    var dedupe = $('imp-dedupe').value;
-    var dryRun = $('imp-dryrun').checked;
+    // Duplicate handling is intentionally not a user-facing choice: every
+    // import always replaces by the target's natural key (date+platform,
+    // date+platform+city+sku, entry_id, etc — see TARGET_UNIQUE_KEYS in the
+    // backend). Re-uploading the same or a corrected file just brings the
+    // sheet in line with what's in the file, which is the only behaviour
+    // that doesn't require the person doing the upload to understand
+    // "skip vs replace vs append" — a real bug earlier this session was
+    // exactly this: the dropdown defaulted to "skip", so corrections
+    // silently never took effect.
+    var dedupe = 'replace';
     var btn = $('imp-soa-run');
     btn.disabled = true;
     btn.textContent = 'Importing…';
 
     var feesPromise = soaLastResult.feesRows > 0
       ? api('importCsv', { target: 'daily_fees', csv: soaLastResult.feesCsv,
-          options: { dedupe: dedupe, dry_run: dryRun, source_file: 'blinkit-soa-multifile' } }, 'POST')
+          options: { dedupe: dedupe, source_file: 'blinkit-soa-multifile' } }, 'POST')
       : Promise.resolve(null);
 
     feesPromise.then(function(feesResult) {
       if (soaLastResult.cashRows > 0) {
         return api('importCsv', {
           target: 'cash_ledger', csv: soaLastResult.cashCsv,
-          options: { dedupe: 'skip', dry_run: dryRun, source_file: 'blinkit-soa-multifile' }
+          options: { dedupe: dedupe, source_file: 'blinkit-soa-multifile' }
         }, 'POST').then(function(cashResult) { return { feesResult: feesResult, cashResult: cashResult }; });
       }
       return { feesResult: feesResult, cashResult: null };
@@ -2756,13 +2729,32 @@ function renderImport(el) {
         // including city/SKU auto-create.
         return api('importCsv', {
           target: 'daily_sales', csv: soaLastResult.salesCsv,
-          options: { dedupe: dedupe, dry_run: dryRun, source_file: 'blinkit-soa-orders' }
+          options: { dedupe: dedupe, source_file: 'blinkit-soa-orders' }
         }, 'POST').then(function(salesResult) { return { feesResult: both.feesResult, cashResult: both.cashResult, salesResult: salesResult }; });
       }
       return { feesResult: both.feesResult, cashResult: both.cashResult, salesResult: null };
     }).then(function(all) {
-      var f = all.feesResult, c = all.cashResult, s = all.salesResult;
-      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!s || s.ok !== false);
+      // Any sheets that matched one of our own tab schemas directly
+      // (plainCsvs — e.g. a pre-built daily_sales_2026-03.csv dropped in
+      // alongside or instead of a real SOA folder) import one at a time,
+      // in sequence, after the SOA-derived targets above.
+      var plainTargets = Object.keys(soaLastResult.plainCsvs || {});
+      var chain = Promise.resolve([]);
+      plainTargets.forEach(function(target) {
+        chain = chain.then(function(acc) {
+          return api('importCsv', {
+            target: target, csv: soaLastResult.plainCsvs[target].csv,
+            options: { dedupe: dedupe, source_file: 'upload-' + target }
+          }, 'POST').then(function(r) { return acc.concat([{ target: target, result: r }]); });
+        });
+      });
+      return chain.then(function(plainResults) {
+        return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, plainResults: plainResults };
+      });
+    }).then(function(all) {
+      var f = all.feesResult, c = all.cashResult, s = all.salesResult, plains = all.plainResults || [];
+      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!s || s.ok !== false) &&
+        plains.every(function(p) { return p.result.ok !== false; });
       var status = ok
         ? '<div style="color:#15803d;font-weight:600">✓ Imported successfully.</div>'
         : '<div style="color:#b91c1c;font-weight:600">✗ Something went wrong — see details.</div>';
@@ -2774,14 +2766,19 @@ function renderImport(el) {
         (s ? '<div style="margin-top:4px"><b>daily_sales:</b> ' + (s.ok === false ? escapeHtml(s.error || 'failed') :
           (s.added + ' added, ' + s.updated + ' updated, ' + s.skipped_duplicate + ' dup skipped' +
            ((s.auto_created_cities && s.auto_created_cities.length) ? ', ' + s.auto_created_cities.length + ' new city/cities' : '') +
-           ((s.auto_created_skus && s.auto_created_skus.length) ? ', ' + s.auto_created_skus.length + ' new SKU(s)' : ''))) + '</div>' : '');
+           ((s.auto_created_skus && s.auto_created_skus.length) ? ', ' + s.auto_created_skus.length + ' new SKU(s)' : ''))) + '</div>' : '') +
+        plains.map(function(p) {
+          var r = p.result;
+          return '<div style="margin-top:4px"><b>' + escapeHtml(p.target) + ':</b> ' + (r.ok === false ? escapeHtml(r.error || 'failed') :
+            (r.added + ' added, ' + r.updated + ' updated, ' + r.skipped_duplicate + ' dup skipped')) + '</div>';
+        }).join('');
       // insertAdjacentHTML (not innerHTML +=) so the existing button node
       // — whose .disabled/.textContent we're about to reset below — isn't
       // destroyed and silently replaced by a fresh copy parsed from the
       // old HTML string (which is what innerHTML += does to every child,
       // including the button itself, since it re-serialises and
       // re-parses the whole container).
-      $('imp-soa-result').insertAdjacentHTML('beforeend', '<div class="alert ' + (ok ? 'low' : 'high') + '" style="margin-top:10px"><div class="sev">' + (dryRun ? 'Preview' : 'Done') + '</div><div class="msg">' + body + '</div></div>');
+      $('imp-soa-result').insertAdjacentHTML('beforeend', '<div class="alert ' + (ok ? 'low' : 'high') + '" style="margin-top:10px"><div class="sev">Done</div><div class="msg">' + body + '</div></div>');
       btn.disabled = false;
       btn.textContent = 'Import into the sheet';
     }).catch(function(e) {
@@ -2791,105 +2788,6 @@ function renderImport(el) {
     });
   }
   $('imp-csv').addEventListener('input', updateRunState);
-
-  $('imp-file').addEventListener('change', function(e) {
-    var f = e.target.files && e.target.files[0];
-    if (!f) {
-      currentCsv = ''; parsedWorkbook = null;
-      $('imp-preview').innerHTML = '';
-      $('imp-sheet-picker').classList.add('hidden');
-      updateRunState();
-      return;
-    }
-    var name = f.name.toLowerCase();
-    $('imp-preview').innerHTML = '<div class="muted"><span class="loading"></span> Reading ' + escapeHtml(f.name) + '\u2026</div>';
-    var reader = new FileReader();
-
-    var isCsv = name.endsWith('.csv') || f.type === 'text/csv';
-    if (isCsv) {
-      reader.onload = function(ev) {
-        currentCsv = String(ev.target.result || '');
-        parsedWorkbook = null;
-        $('imp-sheet-picker').classList.add('hidden');
-        renderPreview(f.name);
-        updateRunState();
-      };
-      reader.onerror = function() {
-        $('imp-preview').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Could not read the CSV file.</div></div>';
-        currentCsv = ''; updateRunState();
-      };
-      reader.readAsText(f);
-    } else {
-      if (typeof XLSX === 'undefined') {
-        $('imp-preview').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Excel parser did not load. Check your internet connection and refresh.</div></div>';
-        return;
-      }
-      reader.onload = function(ev) {
-        try {
-          var data = new Uint8Array(ev.target.result);
-          parsedWorkbook = XLSX.read(data, { type: 'array' });
-          var sheets = parsedWorkbook.SheetNames || [];
-          if (!sheets.length) throw new Error('No sheets found');
-          if (sheets.length > 1) {
-            var sel = $('imp-sheet-sel');
-            sel.innerHTML = sheets.map(function(s){return '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>';}).join('');
-            sel.onchange = function() { selectSheet(sel.value, f.name); };
-            $('imp-sheet-picker').classList.remove('hidden');
-          } else {
-            $('imp-sheet-picker').classList.add('hidden');
-          }
-          selectSheet(sheets[0], f.name);
-        } catch (err) {
-          $('imp-preview').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Failed to parse Excel file: ' + escapeHtml(err.message || err) + '</div></div>';
-          currentCsv = ''; updateRunState();
-        }
-      };
-      reader.onerror = function() {
-        $('imp-preview').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Could not read the Excel file.</div></div>';
-        currentCsv = ''; updateRunState();
-      };
-      reader.readAsArrayBuffer(f);
-    }
-  });
-
-  function selectSheet(sheetName, fileName) {
-    if (!parsedWorkbook) return;
-    var sheet = parsedWorkbook.Sheets[sheetName];
-    currentCsv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
-    renderPreview(fileName + '  \u2192  ' + sheetName);
-    updateRunState();
-  }
-
-  function renderPreview(label) {
-    if (!currentCsv || !currentCsv.trim()) {
-      $('imp-preview').innerHTML = '<div class="alert medium"><div class="sev">Warn</div><div class="msg">This file/sheet looks empty.</div></div>';
-      return;
-    }
-    var lines = currentCsv.split(/\r?\n/).filter(function(l){return l.trim().length;});
-    var headerCells = splitCsvLinePreview(lines[0]);
-    var body = lines.slice(1, 6).map(splitCsvLinePreview);
-    var rowCount = lines.length - 1;
-
-    var detected = detectImportTarget_(headerCells);
-    if (detected) {
-      $('imp-target').value = detected;
-      renderDefaultsFields();
-      $('imp-target-auto').textContent = '\u2713 Auto-detected from column headers \u2014 change the dropdown above if this looks wrong.';
-    } else {
-      $('imp-target-auto').textContent = '';
-    }
-
-    var html = '<div class="muted" style="margin-bottom:6px">' + escapeHtml(label||'') + ' \u00B7 ' + rowCount + ' data row' + (rowCount===1?'':'s') + ' detected (showing first ' + body.length + ')</div>';
-    html += '<div style="overflow:auto;border:1px solid var(--nh-gray-line);border-radius:6px;max-height:260px">' +
-            '<table style="font-size:12px"><thead><tr>' +
-            headerCells.map(function(h){return '<th>' + escapeHtml(h) + '</th>';}).join('') +
-            '</tr></thead><tbody>' +
-            body.map(function(r){
-              return '<tr>' + r.map(function(c){return '<td>' + escapeHtml(c) + '</td>';}).join('') + '</tr>';
-            }).join('') +
-            '</tbody></table></div>';
-    $('imp-preview').innerHTML = html;
-  }
 
   function splitCsvLinePreview(line) {
     var out = []; var cur = ''; var inQ = false;
@@ -2909,58 +2807,45 @@ function renderImport(el) {
     return out;
   }
 
-  function updateRunButtonLabel() {
-    var dry = $('imp-dryrun') && $('imp-dryrun').checked;
-    $('imp-run').textContent = dry ? 'Dry run' : 'Import';
-  }
-  if ($('imp-dryrun')) $('imp-dryrun').addEventListener('change', updateRunButtonLabel);
-  updateRunButtonLabel();
+  $('imp-paste-run').addEventListener('click', function() {
+    var csv = $('imp-csv').value;
+    if (!csv || !csv.trim() || !pasteDetectedTarget) return;
+    var target = pasteDetectedTarget;
+    var defaults = autoDefaultsFor(target);
 
-  $('imp-run').addEventListener('click', function() {
-    var csv = csvForSubmit();
-    if (!csv || !csv.trim()) {
-      $('imp-out').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">No data to import.</div></div>';
-      return;
-    }
-    var dedupe = $('imp-dedupe').value;
-    var dryRun = $('imp-dryrun').checked;
-    var defaults = collectDefaults();
+    $('imp-paste-run').disabled = true;
+    $('imp-paste-out').innerHTML = '<span class="loading"></span> Importing…';
 
-    $('imp-run').disabled = true;
-    $('imp-out').innerHTML = '<span class="loading"></span> ' + (dryRun ? 'Dry-running' : 'Importing') + '\u2026';
-
+    // Duplicate handling isn't a user-facing choice here either — same
+    // "always replace by natural key" behaviour as the upload/SOA path,
+    // so a corrected re-paste always takes effect.
     api('importCsv', {
-      target: $('imp-target').value,
+      target: target,
       csv: csv,
-      options: { dedupe: dedupe, defaults: defaults, dry_run: dryRun, source_file: 'upload' }
+      options: { dedupe: 'replace', defaults: defaults, source_file: 'paste' }
     }, 'POST').then(function(r) {
-      // Column map display (built first \u2014 useful context whether this succeeded or not)
       var mapRows = Object.keys(r.map || {}).map(function(k) {
         var v = r.map[k];
         var vCls = (!v || v === '__ignore__') ? 'pill-warn' : 'pill-ok';
         var vTxt = !v ? '(unmapped)' : (v === '__ignore__' ? '(ignored)' : v);
         return '<tr><td style="padding:2px 8px">' + escapeHtml(k) + '</td>' +
-               '<td style="padding:2px 8px">\u2192</td>' +
+               '<td style="padding:2px 8px">→</td>' +
                '<td style="padding:2px 8px"><span class="pill ' + vCls + '">' + escapeHtml(vTxt) + '</span></td></tr>';
       }).join('');
       var mapTable = '<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12px">Column mapping (click to expand)</summary>' +
                      '<table style="margin-top:6px;font-size:12px"><tbody>' + mapRows + '</tbody></table></details>';
 
-      // Hard stop: required columns didn't map to anything \u2014 refuse rather
-      // than silently write rows with blank critical fields.
       if (r.ok === false) {
         var missingList = (r.missing_required || []).map(function(c) { return '<span class="pill pill-err">' + escapeHtml(c) + '</span>'; }).join(' ');
         var body0 = '<div style="color:#b91c1c;font-weight:600">✗ Data is incorrect — nothing was imported.</div>' +
                     '<b>' + escapeHtml(r.error || 'Import failed') + '</b>' +
                     (missingList ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + missingList + '</div>' : '') +
                     mapTable;
-        $('imp-out').innerHTML = '<div class="alert high"><div class="sev">Cannot import</div><div class="msg">' + body0 + '</div></div>';
-        updateRunState();
+        $('imp-paste-out').innerHTML = '<div class="alert high"><div class="sev">Cannot import</div><div class="msg">' + body0 + '</div></div>';
+        $('imp-paste-run').disabled = false;
         return;
       }
 
-      // Raw Blinkit Sales Report export — aggregated in-app, different shape
-      // of result than the normal column-mapped importer.
       if (r.mode === 'blinkit_sales_report') {
         var stats2 = r.blinkit_stats || {};
         var pills2 = [];
@@ -2975,21 +2860,18 @@ function renderImport(el) {
         newSkus.forEach(function(s) {
           pills2.push('<span class="pill pill-warn">new SKU: ' + escapeHtml(s.name || s.item_id) + ' (' + escapeHtml(s.sku_id) + ')</span>');
         });
-        var hasNewMasterData = newCities.length || newSkus.length;
-
-        var status2 = '<div style="color:#15803d;font-weight:600">✓ Data mapped correctly.</div>';
-
-        var body2 = status2 +
-                    '<b>Detected a raw Blinkit Sales Report export — aggregated automatically</b>' +
+        var body2 = '<div style="color:#15803d;font-weight:600">✓ Data mapped correctly.</div>' +
+          '<b>Detected a raw Blinkit Sales Report export — aggregated automatically</b>' +
           '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + pills2.join(' ') + '</div>' +
           '<div class="muted" style="font-size:11px;margin-top:6px">' +
-            (stats2.delivered || 0) + ' delivered orders → ' + (r.added + r.updated) + ' daily_sales row(s) · dedupe: ' + escapeHtml(r.dedupe_mode || 'skip') +
+            (stats2.delivered || 0) + ' delivered orders → ' + (r.added + r.updated) + ' daily_sales row(s)' +
           '</div>' +
           (newCities.length ? '<div class="muted" style="font-size:11px;margin-top:6px">' + newCities.length + ' new city/cities not seen before were added to the cities tab automatically — double-check state/status.</div>' : '') +
           (newSkus.length ? '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">' + newSkus.length + ' new SKU(s) not seen before were added to the skus tab automatically — COGS was left blank and needs to be entered manually before margin figures for these SKUs can be trusted.</div>' : '') +
           (stats2.no_price_column ? '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">No price column found — revenue (value) is 0 for every row.</div>' : '');
 
-        $('imp-out').innerHTML = '<div class="alert ' + (newSkus.length ? 'medium' : 'low') + '"><div class="sev">' + (dryRun ? 'Preview' : 'Done') + '</div><div class="msg">' + body2 + '</div></div>';
+        $('imp-paste-out').innerHTML = '<div class="alert ' + (newSkus.length ? 'medium' : 'low') + '"><div class="sev">Done</div><div class="msg">' + body2 + '</div></div>';
+        $('imp-paste-run').disabled = false;
         updateRunState();
         return;
       }
@@ -2997,9 +2879,8 @@ function renderImport(el) {
       var errs = (r.errors || []).length;
       var rowWarns = r.row_warnings || {};
       var rowWarnCount = Object.keys(rowWarns).length;
-      var cls = errs ? 'medium' : (rowWarnCount ? 'medium' : (dryRun ? 'low' : 'low'));
+      var cls = errs ? 'medium' : (rowWarnCount ? 'medium' : 'low');
 
-      // Summary pills
       var pills = [];
       if (r.added > 0) pills.push('<span class="pill pill-ok">' + r.added + ' added</span>');
       if (r.updated > 0) pills.push('<span class="pill pill-info">' + r.updated + ' updated</span>');
@@ -3015,11 +2896,10 @@ function renderImport(el) {
         ? '<div style="color:#b45309;font-weight:600">✗ Some data did not map correctly — see details below.</div>'
         : '<div style="color:#15803d;font-weight:600">✓ Data mapped correctly.</div>';
 
-      var heading = dryRun ? 'Dry run complete' : 'Import complete';
-      var body = status + '<b>' + escapeHtml(heading) + '</b>' +
+      var body = status + '<b>Import complete</b>' +
                  '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + pills.join(' ') + '</div>' +
-                 (r.total_rows ? '<div class="muted" style="font-size:11px;margin-top:4px">' + r.total_rows + ' rows processed \u00B7 dedupe: ' + escapeHtml(r.dedupe_mode || 'skip') + '</div>' : '') +
-                 (rowWarnCount ? '<div class="muted" style="font-size:11px;margin-top:4px">Some rows were written but are missing a value the dashboard needs \u2014 likely blank source cells or an ID (SKU/city) that didn\'t translate. Those rows won\'t show up correctly until fixed.</div>' : '') +
+                 (r.total_rows ? '<div class="muted" style="font-size:11px;margin-top:4px">' + r.total_rows + ' rows processed</div>' : '') +
+                 (rowWarnCount ? '<div class="muted" style="font-size:11px;margin-top:4px">Some rows were written but are missing a value the dashboard needs — likely blank source cells or an ID (SKU/city) that didn\'t translate. Those rows won\'t show up correctly until fixed.</div>' : '') +
                  mapTable;
 
       if (errs > 0) {
@@ -3027,13 +2907,16 @@ function renderImport(el) {
                 '<ul style="font-size:12px">' + r.errors.slice(0, 20).map(function(e){return '<li>Row ' + escapeHtml(String(e.row)) + ': ' + escapeHtml(e.error) + '</li>';}).join('') + '</ul></details></div>';
       }
 
-      $('imp-out').innerHTML = '<div class="alert ' + cls + '"><div class="sev">' + (dryRun ? 'Preview' : 'Done') + '</div><div class="msg">' + body + '</div></div>';
+      $('imp-paste-out').innerHTML = '<div class="alert ' + cls + '"><div class="sev">Done</div><div class="msg">' + body + '</div></div>';
+      $('imp-paste-run').disabled = false;
       updateRunState();
     }).catch(function(e) {
-      $('imp-out').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message || e) + '</div></div>';
-      updateRunState();
+      $('imp-paste-out').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message || e) + '</div></div>';
+      $('imp-paste-run').disabled = false;
     });
   });
+
+  setMode('upload');
 }
 
 function renderMaster(el) {
