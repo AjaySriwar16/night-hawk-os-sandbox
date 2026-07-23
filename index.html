@@ -2109,6 +2109,25 @@ function soaExtractDailyAgeing_(rows, dailyFees, unassigned, sourceLabel) {
     if (d) dateCols.push({ ix: ix, date: d });
   });
   if (!dateCols.length) return 0;
+  // Blinkit's Daily Ageing export is a rolling snapshot of whatever
+  // inventory is STILL sitting in the warehouse as of the report date —
+  // not a historical replay. When it reaches back into an earlier month
+  // (e.g. an April file including March 15-31 columns), those earlier-month
+  // columns only reflect the shrunken subset of stock that happens to
+  // still be aging, NOT the full population that month's own file already
+  // reported. Importing them would silently gut that prior month's real
+  // storage figure (seen firsthand: an April file's March 15-31 columns
+  // summed to ~1% of what March's own file reported for the same dates).
+  // Fix: only trust date columns that fall in the same calendar month as
+  // this file's own latest date column — anything from an earlier month
+  // is dropped, so each month's storage figure only ever comes from that
+  // month's own file.
+  var latestMonth_ = dateCols.reduce(function(max, dc) {
+    var m = dc.date.slice(0, 7);
+    return m > max ? m : max;
+  }, '');
+  dateCols = dateCols.filter(function(dc) { return dc.date.slice(0, 7) === latestMonth_; });
+  if (!dateCols.length) return 0;
   var n = 0;
   for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
     var row = rows[r];
