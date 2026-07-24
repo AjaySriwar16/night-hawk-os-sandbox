@@ -1907,6 +1907,12 @@ var SOA_SHEET_TYPES = [
   { type: 'payout_breakup',     names: ['payout breakup'] },
   { type: 'note',               names: ['note'] },                 // recognised, intentionally not extracted
   { type: 'stock_on_hand',      names: ['stock on hand'] },
+  // Blinkit Ads Manager export — one workbook, up to 4 campaign-type sheets.
+  // All four share the same shape we need (a Date column + an "Estimated
+  // Budget Consumed" column); campaign/targeting-level detail doesn't map to
+  // a specific SKU or city, so every sheet just contributes to one daily
+  // ad-spend total (see soaExtractAdSpend_).
+  { type: 'ad_spend',           names: ['banner_listing', 'brand_booster', 'product_recommendation', 'product_listing'] },
 ];
 // Fallback keyword groups — used only if no sheet in the workbook
 // matched exactly by name above. All keywords in a group must appear as
@@ -1926,6 +1932,7 @@ var SOA_SHEET_FALLBACK = [
   { type: 'pending_settlement', any: [['settlement']] },
   { type: 'payout_breakup',     any: [['payout']] },
   { type: 'stock_on_hand',      any: [['stock', 'hand']] },
+  { type: 'ad_spend',           any: [['banner', 'listing'], ['brand', 'booster'], ['product', 'recommendation'], ['product', 'listing']] },
 ];
 
 function soaNormText_(s) { return String(s == null ? '' : s).toLowerCase().trim().replace(/\s+/g, ' '); }
@@ -2001,6 +2008,8 @@ function soaParseDate_(v) {
     var mo = SOA_MONTHS_[m2[2].toLowerCase()];
     if (mo) return m2[3] + '-' + String(mo).padStart(2, '0') + '-' + String(parseInt(m2[1], 10)).padStart(2, '0');
   }
+  var m3 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/); // "18-06-2025" (Blinkit Ads Manager export, DD-MM-YYYY)
+  if (m3) return m3[3] + '-' + m3[2].padStart(2, '0') + '-' + m3[1].padStart(2, '0');
   var d2 = new Date(s);
   if (!isNaN(d2.getTime())) return fmtD(d2);
   return '';
@@ -2186,6 +2195,28 @@ function soaExtractCourierOrRecall_(rows, dailyFees, unassigned, sourceLabel, da
     var amt = soaNum_(soaCell_(row, colIx, amountCandidates));
     if (!amt) continue;
     soaAddAmount_(dailyFees, date, 'shipping_fee', amt, unassigned, sourceLabel);
+    n++;
+  }
+  return n;
+}
+// Blinkit Ads Manager export (BANNER_LISTING / BRAND_BOOSTER /
+// PRODUCT_RECOMMENDATION / PRODUCT_LISTING sheets) — each row is one
+// campaign/targeting-line's spend for one day. There's no SKU or city on
+// these rows (targeting is by keyword/category, not by specific product or
+// geography), so every sheet just adds into one daily total; daily_ad_spend
+// rows are written with blank city_id/sku_id (a brand-level spend bucket).
+function soaExtractAdSpend_(rows, dailyAdSpend, unassigned, sourceLabel) {
+  var hdr = soaFindHeaderRow_(rows, [['date'], ['estimatedbudgetconsumed']]);
+  if (!hdr) return 0;
+  var colIx = hdr.colIx, n = 0;
+  for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
+    var row = rows[r];
+    if (!row || row.every(function(c) { return c === '' || c == null; })) continue;
+    var date = soaParseDate_(soaCell_(row, colIx, ['date']));
+    var amt = soaNum_(soaCell_(row, colIx, ['estimatedbudgetconsumed']));
+    if (!amt) continue;
+    if (!date) { unassigned.push({ source: sourceLabel, field: 'ad_spend', amount: amt }); continue; }
+    dailyAdSpend[date] = (dailyAdSpend[date] || 0) + amt;
     n++;
   }
   return n;
@@ -2395,6 +2426,7 @@ function detectImportTarget_(headerCells) {
 // everything else keeps processing.
 function soaAggregateFiles_(files) {
   var dailyFees = {};
+  var dailyAdSpend = {};
   var unassigned = [];
   var cashLedger = [];
   var salesRows = []; // raw rows shaped like Blinkit's native Sales Report export — see soaExtractOrders_
@@ -2457,6 +2489,7 @@ function soaAggregateFiles_(files) {
             n = payoutBreakupTotals ? 1 : 0;
           }
           else if (type === 'stock_on_hand') n = soaExtractStockOnHand_(rows, inventoryRows);
+          else if (type === 'ad_spend') n = soaExtractAdSpend_(rows, dailyAdSpend, unassigned, label);
           // ageing_reversal / note: recognised, intentionally not extracted (n stays 0)
           detected.push({ sheet: sheetName, type: type, rows: n });
         } catch (sheetErr) {
@@ -2469,7 +2502,7 @@ function soaAggregateFiles_(files) {
     }
   });
 
-  return { dailyFees: dailyFees, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, inventoryRows: inventoryRows, fileReport: fileReport, plainImports: plainImports };
+  return { dailyFees: dailyFees, dailyAdSpend: dailyAdSpend, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, inventoryRows: inventoryRows, fileReport: fileReport, plainImports: plainImports };
 }
 
 // Converts the plainImports accumulator from soaAggregateFiles_ into one
@@ -2511,6 +2544,16 @@ function soaDailyFeesToCsv_(dailyFees, platformId, sourceLabel) {
     lines.push(['DF-' + yyyymm + '-' + String(i + 1).padStart(4, '0'), d, platformId,
       round2_(r.storage_fee), round2_(r.shipping_fee), round2_(r.commission_fee), round2_(r.tds), round2_(r.lost_damaged),
       sourceLabel].map(soaCsvField_).join(','));
+  });
+  return { csv: lines.join('\n'), rowCount: dates.length };
+}
+function soaDailyAdSpendToCsv_(dailyAdSpend, platformId, sourceLabel) {
+  var dates = Object.keys(dailyAdSpend).sort();
+  var lines = ['ad_id,date,platform_id,city_id,sku_id,amount'];
+  var yyyymm = dates.length ? dates[0].slice(0, 7).replace('-', '') : Utilities_yyyymm_();
+  dates.forEach(function(d, i) {
+    lines.push(['AD-SOA-' + yyyymm + '-' + String(i + 1).padStart(4, '0'), d, platformId, '', '',
+      round2_(dailyAdSpend[d])].map(soaCsvField_).join(','));
   });
   return { csv: lines.join('\n'), rowCount: dates.length };
 }
@@ -2697,11 +2740,13 @@ function renderImport(el) {
     var sourceLabel = 'blinkit-soa' + (monthLabel ? '-' + monthLabel.slice(0, 7) : '');
 
     var fees = soaDailyFeesToCsv_(result.dailyFees, platformId, sourceLabel);
+    var ads = soaDailyAdSpendToCsv_(result.dailyAdSpend || {}, platformId, sourceLabel);
     var cash = soaCashLedgerToCsv_(result.cashLedger, sourceLabel);
     var salesCsv = result.salesRows.length ? soaSalesRowsToCsv_(result.salesRows) : '';
     var plainCsvs = soaPlainImportsToCsvs_(result.plainImports || {});
     var inv = soaInventoryRowsToCsv_(result.inventoryRows || [], 'blinkit-stock-on-hand');
-    soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, cashCsv: cash.csv, cashRows: cash.rowCount,
+    soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, adsCsv: ads.csv, adsRows: ads.rowCount,
+      cashCsv: cash.csv, cashRows: cash.rowCount,
       salesCsv: salesCsv, salesRowCount: result.salesRows.length, plainCsvs: plainCsvs,
       invCsv: inv.csv, invRows: inv.rowCount };
 
@@ -2763,9 +2808,10 @@ function renderImport(el) {
     var plainSummary = plainTargets.length
       ? ', plus ' + plainTargets.map(function(t) { return '<b>' + plainCsvs[t].rowCount + ' row(s)</b> for <code class="inline">' + t + '</code>'; }).join(', ')
       : '';
-    var importDisabled = fees.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length && inv.rowCount === 0;
+    var importDisabled = fees.rowCount === 0 && ads.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length && inv.rowCount === 0;
     var resultHtml = '<div class="alert ' + (errorCount ? 'medium' : 'low') + '"><div class="sev">Processed</div><div class="msg">' +
       '<b>' + fees.rowCount + ' day(s) of daily_fees</b> ready' + (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') +
+      (ads.rowCount ? ', plus <b>' + ads.rowCount + ' day(s) of daily_ad_spend</b> (' + inr(Object.values(result.dailyAdSpend||{}).reduce(function(s,v){return s+v;},0)) + ' total)' : '') +
       (result.salesRows.length ? ', plus <b>' + result.salesRows.length + ' order line(s)</b> for daily_sales' : '') +
       (inv.rowCount ? ', plus <b>' + inv.rowCount + ' warehouse/SKU row(s)</b> for inventory_snapshots' : '') +
       plainSummary + '.' +
@@ -2814,6 +2860,14 @@ function renderImport(el) {
       }
       return { feesResult: feesResult, cashResult: null };
     }).then(function(both) {
+      if (soaLastResult.adsRows > 0) {
+        return api('importCsv', {
+          target: 'daily_ad_spend', csv: soaLastResult.adsCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-ads-manager' }
+        }, 'POST').then(function(adsResult) { return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: adsResult }; });
+      }
+      return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: null };
+    }).then(function(both) {
       if (soaLastResult.salesRowCount > 0) {
         // No columnMap → the backend auto-detects this as a raw Blinkit
         // Sales Report shape (isRawBlinkitSalesReport_) and runs it
@@ -2823,17 +2877,17 @@ function renderImport(el) {
         return api('importCsv', {
           target: 'daily_sales', csv: soaLastResult.salesCsv,
           options: { dedupe: dedupe, source_file: 'blinkit-soa-orders' }
-        }, 'POST').then(function(salesResult) { return { feesResult: both.feesResult, cashResult: both.cashResult, salesResult: salesResult }; });
+        }, 'POST').then(function(salesResult) { return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: both.adsResult, salesResult: salesResult }; });
       }
-      return { feesResult: both.feesResult, cashResult: both.cashResult, salesResult: null };
+      return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: both.adsResult, salesResult: null };
     }).then(function(all) {
       if (soaLastResult.invRows > 0) {
         return api('importCsv', {
           target: 'inventory_snapshots', csv: soaLastResult.invCsv,
           options: { dedupe: dedupe, source_file: 'blinkit-stock-on-hand' }
-        }, 'POST').then(function(invResult) { return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, invResult: invResult }; });
+        }, 'POST').then(function(invResult) { return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: invResult }; });
       }
-      return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, invResult: null };
+      return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: null };
     }).then(function(all) {
       // Any sheets that matched one of our own tab schemas directly
       // (plainCsvs — e.g. a pre-built daily_sales_2026-03.csv dropped in
@@ -2850,11 +2904,11 @@ function renderImport(el) {
         });
       });
       return chain.then(function(plainResults) {
-        return { feesResult: all.feesResult, cashResult: all.cashResult, salesResult: all.salesResult, invResult: all.invResult, plainResults: plainResults };
+        return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: all.invResult, plainResults: plainResults };
       });
     }).then(function(all) {
-      var f = all.feesResult, c = all.cashResult, s = all.salesResult, iv = all.invResult, plains = all.plainResults || [];
-      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!s || s.ok !== false) && (!iv || iv.ok !== false) &&
+      var f = all.feesResult, c = all.cashResult, ad = all.adsResult, s = all.salesResult, iv = all.invResult, plains = all.plainResults || [];
+      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!ad || ad.ok !== false) && (!s || s.ok !== false) && (!iv || iv.ok !== false) &&
         plains.every(function(p) { return p.result.ok !== false; });
       var status = ok
         ? '<div style="color:#15803d;font-weight:600">✓ Imported successfully.</div>'
@@ -2864,6 +2918,8 @@ function renderImport(el) {
           (f.added + ' added, ' + f.updated + ' updated, ' + f.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
         (c ? '<div style="margin-top:4px"><b>cash_ledger:</b> ' + (c.ok === false ? escapeHtml(c.error || 'failed') :
           (c.added + ' added, ' + c.updated + ' updated, ' + c.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
+        (ad ? '<div style="margin-top:4px"><b>daily_ad_spend:</b> ' + (ad.ok === false ? escapeHtml(ad.error || 'failed') :
+          (ad.added + ' added, ' + ad.updated + ' updated, ' + ad.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
         (s ? '<div style="margin-top:4px"><b>daily_sales:</b> ' + (s.ok === false ? escapeHtml(s.error || 'failed') :
           (s.added + ' added, ' + s.updated + ' updated, ' + s.skipped_duplicate + ' dup skipped' +
            ((s.auto_created_cities && s.auto_created_cities.length) ? ', ' + s.auto_created_cities.length + ' new city/cities' : '') +
