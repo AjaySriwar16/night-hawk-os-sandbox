@@ -730,8 +730,11 @@ function renderInventory(el) {
       var reorderSkuCount = Object.keys(reorderSkuSet).length;
       var reorderWhCount = Object.keys(reorderWhSet).length;
       reorderHtml = '<div class="panel">' +
-        '<h2>Reorder alerts <span class="pill pill-warn" style="margin-left:8px">' + d.reorder.length + '</span></h2>' +
-        '<div class="desc">' + d.reorder.length + ' alert' + (d.reorder.length === 1 ? '' : 's') + ' — one row per SKU × warehouse combination running low, covering ' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + ' across ' + reorderWhCount + ' warehouse' + (reorderWhCount === 1 ? '' : 's') + '. Based on your configured lead time (' + (state.boot.config.REORDER_LEAD_TIME_DAYS || 7) + 'd) and target cover (' + (state.boot.config.REORDER_TARGET_COVER_DAYS || 21) + 'd). Recommended quantities bring you back to target. Click "Log as issue" to hand off to ops.</div>' +
+        '<h2>Reorder alerts' +
+          ' <span class="pill pill-warn" style="margin-left:8px">' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + ' low</span>' +
+          ' <span class="pill pill-warn">' + reorderWhCount + ' warehouse' + (reorderWhCount === 1 ? '' : 's') + '</span>' +
+        '</h2>' +
+        '<div class="desc">These ' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + (reorderSkuCount === 1 ? ' is' : ' are') + ' running low, split across ' + reorderWhCount + ' warehouses — that\'s why the table below has ' + d.reorder.length + ' rows (one per SKU + warehouse pair). Target cover: ' + (state.boot.config.REORDER_TARGET_COVER_DAYS || 21) + 'd, lead time: ' + (state.boot.config.REORDER_LEAD_TIME_DAYS || 7) + 'd. Click "Log as issue" to hand off to ops.</div>' +
         '<table><thead><tr><th>Urgency</th><th>SKU</th><th>Warehouse</th><th class="num">Sellable</th><th class="num">Daily run</th><th class="num">Cover</th><th class="num">Order qty</th><th>By date</th><th></th></tr></thead><tbody>' + reorderRows + '</tbody></table>' +
         '</div>';
     }
@@ -1528,8 +1531,8 @@ function renderBrief(el) {
           '<div class="sub">' + deltaPill(Math.round(d.sales.delta_revenue)) + ' vs prev. Week ' + inr(w.revenue) + '</div></div>' +
         '<div class="kpi"><div class="label">Ad spend</div><div class="value">' + inr(d.ad_spend.latest) + '</div>' +
           '<div class="sub">' + deltaPill(Math.round(d.ad_spend.delta), true) + ' vs prev</div></div>' +
-        '<div class="kpi ' + (d.stockouts.length ? 'err' : 'ok') + '"><div class="label">Reorder alerts</div><div class="value">' + d.stockouts.length + '</div>' +
-          '<div class="sub">' + (function() { var s = {}; d.stockouts.forEach(function(r) { s[r.sku_id] = 1; }); var n = Object.keys(s).length; return n + ' SKU' + (n === 1 ? '' : 's') + ', by warehouse'; })() + '</div></div>' +
+        '<div class="kpi ' + (d.stockouts.length ? 'err' : 'ok') + '"><div class="label">SKUs low on stock</div><div class="value">' + (function() { var s = {}; d.stockouts.forEach(function(r) { s[r.sku_id] = 1; }); return Object.keys(s).length; })() + '</div>' +
+          '<div class="sub">' + d.stockouts.length + ' warehouse location' + (d.stockouts.length === 1 ? '' : 's') + ' to restock</div></div>' +
         '<div class="kpi ' + (d.complaints.length ? 'warn' : 'ok') + '"><div class="label">New complaints</div><div class="value">' + d.complaints.length + '</div>' +
           '<div class="sub">in last 2 days</div></div>' +
         '<div class="kpi ' + (d.issues.length ? 'warn' : 'ok') + '"><div class="label">New issues</div><div class="value">' + d.issues.length + '</div>' +
