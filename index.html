@@ -486,7 +486,7 @@ function renderDashboard(el) {
     }).join('');
     var platHtml = (d.byPlatform && d.byPlatform.length)
       ? '<table><thead><tr>' +
-          '<th>Platform</th><th class="num">Units</th>' +
+          '<th>Platform</th><th class="num">Cans</th>' +
           '<th class="num">Price / can</th>' +
           '<th class="num" title="Production cost">COGS / can</th>' +
           '<th class="num" title="Storage + Shipping + Commission + TDS + Lost/Damaged">Platform fees / can</th>' +
@@ -499,7 +499,7 @@ function renderDashboard(el) {
     el.innerHTML =
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Revenue</div><div class="value">' + inr(k.revenue) + '</div><div class="sub">' + d.range.from + ' &rarr; ' + d.range.to + '</div></div>' +
-        '<div class="kpi"><div class="label">Units Sold</div><div class="value">' + (k.units||0).toLocaleString('en-IN') + '</div><div class="sub">Avg \u20B9' + k.avg_price_per_unit + '/can sold</div></div>' +
+        '<div class="kpi"><div class="label">Cans Sold</div><div class="value">' + (k.units||0).toLocaleString('en-IN') + '</div><div class="sub">Avg \u20B9' + k.avg_price_per_unit + '/can sold</div></div>' +
         '<div class="kpi ' + costUnitClass + '"><div class="label">Cost / Can</div><div class="value">\u20B9' + (k.cost_per_unit||0).toFixed(2) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
         '<div class="kpi ' + cmUnitClass + '"><div class="label">CM / Can</div><div class="value">\u20B9' + (k.cm_per_unit||0).toFixed(2) + '</div><div class="sub">Price \u2212 Total cost</div></div>' +
         '<div class="kpi ' + roasClass + '"><div class="label">ROAS</div><div class="value">' + k.roas + 'x</div><div class="sub">Ad spend ' + inr(k.ad_spend) + '</div></div>' +
@@ -544,7 +544,7 @@ function renderDashboard(el) {
         labels: d.series.map(function(r){return r.date;}),
         datasets: [
           { label: 'Revenue (\u20B9)', data: d.series.map(function(r){return r.revenue;}), borderColor: '#0B3954', backgroundColor: 'rgba(11,57,84,0.1)', tension: 0.3, yAxisID: 'y' },
-          { label: 'Units', data: d.series.map(function(r){return r.units;}), borderColor: '#F5B700', backgroundColor: 'rgba(245,183,0,0.12)', tension: 0.3, yAxisID: 'y1' }
+          { label: 'Cans', data: d.series.map(function(r){return r.units;}), borderColor: '#F5B700', backgroundColor: 'rgba(245,183,0,0.12)', tension: 0.3, yAxisID: 'y1' }
         ]
       },
       options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'linear', position: 'left' }, y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } } } }
@@ -651,13 +651,13 @@ function renderUnitEcon(el) {
   return api('dashboard', state.filter).then(function(d) {
     var k = d.kpis; var units = k.units || 1;
     var rows = [
-      ['Revenue / unit', k.revenue / units],
-      ['Ad spend / unit', k.ad_spend / units],
-      ['Storage / unit', k.storage_fee / units],
-      ['Shipping / unit', k.shipping_fee / units],
-      ['Commission / unit', k.commission_fee / units],
-      ['TDS / unit', k.tds / units],
-      ['Lost/Damaged / unit', k.lost_damaged / units]
+      ['Revenue / can', k.revenue / units],
+      ['Ad spend / can', k.ad_spend / units],
+      ['Storage / can', k.storage_fee / units],
+      ['Shipping / can', k.shipping_fee / units],
+      ['Commission / can', k.commission_fee / units],
+      ['TDS / can', k.tds / units],
+      ['Lost/Damaged / can', k.lost_damaged / units]
     ];
     var totalCostU = (k.ad_spend + k.platform_cost) / units;
     var cmU = (k.revenue - k.ad_spend - k.platform_cost) / units;
@@ -669,12 +669,12 @@ function renderUnitEcon(el) {
     }).join('');
     el.innerHTML =
       '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Revenue / Unit</div><div class="value">\u20B9' + (k.revenue/units).toFixed(2) + '</div><div class="sub">' + k.units + ' units</div></div>' +
-        '<div class="kpi"><div class="label">Total Cost / Unit</div><div class="value">\u20B9' + totalCostU.toFixed(2) + '</div><div class="sub">Ads + Platform (excl COGS)</div></div>' +
-        '<div class="kpi ' + (cmU >=0 ? 'ok' : 'err') + '"><div class="label">CM / Unit</div><div class="value">\u20B9' + cmU.toFixed(2) + '</div><div class="sub">Revenue \u2212 (Ads + Platform)</div></div>' +
+        '<div class="kpi"><div class="label">Revenue / Can</div><div class="value">\u20B9' + (k.revenue/units).toFixed(2) + '</div><div class="sub">' + k.units + ' cans</div></div>' +
+        '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">\u20B9' + totalCostU.toFixed(2) + '</div><div class="sub">Ads + Platform (excl COGS)</div></div>' +
+        '<div class="kpi ' + (cmU >=0 ? 'ok' : 'err') + '"><div class="label">CM / Can</div><div class="value">\u20B9' + cmU.toFixed(2) + '</div><div class="sub">Revenue \u2212 (Ads + Platform)</div></div>' +
       '</div>' +
-      '<div class="panel"><h2>Cost decomposition (per unit)</h2>' +
-      '<table><thead><tr><th>Line</th><th class="num">\u20B9 / unit</th><th class="num">% of Revenue</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+      '<div class="panel"><h2>Cost decomposition (per can)</h2>' +
+      '<table><thead><tr><th>Line</th><th class="num">\u20B9 / can</th><th class="num">% of Revenue</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
   });
 }
 
@@ -1015,7 +1015,7 @@ function renderScenarios(el) {
         '<div>' +
           '<h3>Scenario inputs</h3>' +
           '<div id="sc-form" style="display:grid;grid-template-columns:1fr auto;gap:8px 12px;font-size:13px">' +
-            inputRow('Target units / month',       'sc-units',       s.units, 'units', 'integer') +
+            inputRow('Target cans / month',       'sc-units',       s.units, 'cans', 'integer') +
             inputRow('Realised price per can',     'sc-price',       s.price, '\u20B9', 'number', 0.5) +
             inputRow('COGS per can (production)',  'sc-cogs',        s.cogs, '\u20B9', 'number', 0.5) +
             inputRow('Platform fees (storage+ship+comm) as % of revenue', 'sc-platform-pct', s.platform_pct, '%', 'number', 0.5) +
@@ -1092,7 +1092,7 @@ function renderScenarios(el) {
       html += '<h3 style="margin:10px 0 8px">Scenario vs. Current (last 30d)</h3>';
       html += '<table><thead><tr><th>Line</th><th class="num">Current</th><th class="num">Scenario</th><th class="num">\u0394</th></tr></thead><tbody>';
       var rows = [
-        ['Units sold / month', cur.units, x.units, 0],
+        ['Cans sold / month', cur.units, x.units, 0],
         ['Realised price / can', cur.price, x.price, 2],
         ['COGS / can', cur.cogs, x.cogs, 2],
         ['Platform fees (% of rev)', cur.platform_pct, x.platform_pct, 1, '%'],
@@ -1525,7 +1525,7 @@ function renderBrief(el) {
       (d.previous_date ? ' vs <b>' + escapeHtml(d.previous_date) + '</b>' : '') + '.</div>' +
       staleBadge + '</div>' +
       '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Units sold</div><div class="value">' + s.units + '</div>' +
+        '<div class="kpi"><div class="label">Cans sold</div><div class="value">' + s.units + '</div>' +
           '<div class="sub">' + deltaPill(d.sales.delta_units) + ' vs prev. Week avg ' + w.avg_units + '/d</div></div>' +
         '<div class="kpi"><div class="label">Revenue</div><div class="value">' + inr(s.revenue) + '</div>' +
           '<div class="sub">' + deltaPill(Math.round(d.sales.delta_revenue)) + ' vs prev. Week ' + inr(w.revenue) + '</div></div>' +
