@@ -700,11 +700,237 @@ function renderAds(el) {
   });
 }
 
+// Self-contained "Upload inventory data" panel, mounted at the top of the
+// Inventory view so a Stock On Hand (or full SOA) file can be dropped in
+// without leaving this tab. Same universal detector/importer as the Data
+// Import Center (soaAggregateFiles_ etc, all module-scope) — just a second,
+// inventory-focused entry point into the exact same pipeline. Uses its own
+// element-id prefix (invimp-*) so it can't collide with the real Data
+// Import Center's ids if both happen to exist in the DOM at once.
+function renderInventoryUploadPanel_(el) {
+  var panel = document.createElement('div');
+  panel.className = 'panel';
+  panel.innerHTML =
+    '<h2>Upload inventory data</h2>' +
+    '<div class="desc">Upload a Blinkit "Stock On Hand" export (or a full SOA folder) to refresh warehouse stock levels — detected automatically, nothing to pick by hand. Re-uploading always corrects the latest snapshot in place rather than creating duplicates.</div>' +
+    '<label class="muted" style="display:block;margin-bottom:6px">Pick one or more files (CSV, XLSX, or XLS)</label>' +
+    '<input type="file" id="invimp-files" accept=".csv,.xlsx,.xls" multiple>' +
+    '<div style="margin-top:10px">' +
+      '<button id="invimp-process" type="button" style="padding:8px 16px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px" disabled>Process files</button>' +
+    '</div>' +
+    '<div id="invimp-report" style="margin-top:14px"></div>' +
+    '<div id="invimp-result" style="margin-top:14px"></div>';
+  el.insertBefore(panel, el.firstChild);
+
+  var selectedFiles = [];
+  var lastResult = null;
+
+  $('invimp-files').addEventListener('change', function(e) {
+    selectedFiles = Array.prototype.slice.call(e.target.files || []);
+    $('invimp-process').disabled = selectedFiles.length === 0;
+    $('invimp-report').innerHTML = '';
+    $('invimp-result').innerHTML = '';
+    lastResult = null;
+  });
+
+  $('invimp-process').addEventListener('click', function() {
+    if (!selectedFiles.length) return;
+    if (typeof XLSX === 'undefined') {
+      $('invimp-report').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Excel parser did not load. Check your internet connection and refresh.</div></div>';
+      return;
+    }
+    $('invimp-process').disabled = true;
+    $('invimp-report').innerHTML = '<span class="loading"></span> Reading ' + selectedFiles.length + ' file(s)…';
+    $('invimp-result').innerHTML = '';
+
+    var readPromises = selectedFiles.map(function(f) {
+      return new Promise(function(resolve) {
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+          try {
+            var data = new Uint8Array(ev.target.result);
+            var wb = XLSX.read(data, { type: 'array' });
+            resolve({ name: f.name, workbook: wb });
+          } catch (err) {
+            resolve({ name: f.name, error: 'Could not parse this file: ' + (err.message || err) });
+          }
+        };
+        reader.onerror = function() { resolve({ name: f.name, error: 'Could not read this file (corrupted or unreadable).' }); };
+        reader.readAsArrayBuffer(f);
+      });
+    });
+
+    Promise.all(readPromises).then(function(files) {
+      var result;
+      try {
+        result = soaAggregateFiles_(files);
+      } catch (err) {
+        $('invimp-process').disabled = false;
+        $('invimp-report').innerHTML = '<div class="alert high"><div class="sev">Error</div><div class="msg">Failed to process files: ' + escapeHtml(err.message || err) + '</div></div>';
+        return;
+      }
+      renderReport(result);
+      $('invimp-process').disabled = false;
+    });
+  });
+
+  function renderReport(result) {
+    var platforms = (state.boot.platforms || []);
+    var blinkit = platforms.find(function(p) { return /blinkit/i.test(p.name || ''); });
+    var platformId = blinkit ? blinkit.platform_id : 'PLT-001';
+    var monthLabel = Object.keys(result.dailyFees).sort()[0];
+    var sourceLabel = 'blinkit-soa' + (monthLabel ? '-' + monthLabel.slice(0, 7) : '');
+
+    var fees = soaDailyFeesToCsv_(result.dailyFees, platformId, sourceLabel);
+    var ads = soaDailyAdSpendToCsv_(result.dailyAdSpend || {}, platformId, sourceLabel);
+    var cash = soaCashLedgerToCsv_(result.cashLedger, sourceLabel);
+    var salesCsv = result.salesRows.length ? soaSalesRowsToCsv_(result.salesRows) : '';
+    var plainCsvs = soaPlainImportsToCsvs_(result.plainImports || {});
+    var inv = soaInventoryRowsToCsv_(result.inventoryRows || [], 'blinkit-stock-on-hand');
+    lastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, adsCsv: ads.csv, adsRows: ads.rowCount,
+      cashCsv: cash.csv, cashRows: cash.rowCount,
+      salesCsv: salesCsv, salesRowCount: result.salesRows.length, plainCsvs: plainCsvs,
+      invCsv: inv.csv, invRows: inv.rowCount };
+
+    var fileRows = result.fileReport.map(function(f) {
+      var cls = f.status === 'error' ? 'pill-err' : (f.status === 'unrecognized' ? 'pill-warn' : 'pill-ok');
+      var detail = (f.detected || []).map(function(d) {
+        return d.error ? (d.sheet + ': error — ' + escapeHtml(d.error)) : (d.sheet + ' (' + d.type + '): ' + d.rows + ' row(s)');
+      }).join('; ');
+      return '<tr><td style="padding:3px 8px">' + escapeHtml(f.name) + '</td>' +
+             '<td style="padding:3px 8px"><span class="pill ' + cls + '">' + f.status + '</span></td>' +
+             '<td style="padding:3px 8px;font-size:11px" class="muted">' + (f.message ? escapeHtml(f.message) : detail) + '</td></tr>';
+    }).join('');
+    var errorCount = result.fileReport.filter(function(f) { return f.status === 'error'; }).length;
+    var unrecCount = result.fileReport.filter(function(f) { return f.status === 'unrecognized'; }).length;
+
+    var reportHtml = '<table style="font-size:12px;width:100%"><thead><tr><th>File</th><th>Status</th><th>Detected</th></tr></thead><tbody>' + fileRows + '</tbody></table>';
+    if (errorCount) reportHtml += '<div class="muted" style="font-size:11px;margin-top:6px;color:#b91c1c">' + errorCount + ' file(s) could not be read and were skipped — everything else still processed.</div>';
+    if (unrecCount) reportHtml += '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">' + unrecCount + ' file(s) had no sheets this importer recognises — skipped, nothing lost from the rest.</div>';
+
+    var plainTargets = Object.keys(plainCsvs);
+    var importDisabled = fees.rowCount === 0 && ads.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length && inv.rowCount === 0;
+    var resultHtml = '<div class="alert ' + (errorCount ? 'medium' : 'low') + '"><div class="sev">Processed</div><div class="msg">' +
+      (inv.rowCount ? '<b>' + inv.rowCount + ' warehouse/SKU row(s)</b> ready for inventory_snapshots' : '<b>No inventory rows detected</b> in these file(s)') +
+      (fees.rowCount ? ', plus <b>' + fees.rowCount + ' day(s) of daily_fees</b>' : '') +
+      (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') +
+      (ads.rowCount ? ', plus <b>' + ads.rowCount + ' day(s) of daily_ad_spend</b>' : '') +
+      (result.salesRows.length ? ', plus <b>' + result.salesRows.length + ' order line(s)</b> for daily_sales' : '') +
+      '.' +
+      reportHtml +
+      '</div></div>' +
+      '<div style="margin-top:10px;display:flex;justify-content:flex-end">' +
+      '<button id="invimp-run" style="padding:9px 18px;border:0;background:var(--nh-navy);color:white;border-radius:6px;cursor:pointer;font-size:13px"' + (importDisabled ? ' disabled' : '') + '>Import into the sheet</button>' +
+      '</div>';
+
+    $('invimp-report').innerHTML = '';
+    $('invimp-result').innerHTML = resultHtml;
+
+    $('invimp-run') && $('invimp-run').addEventListener('click', function() {
+      runImport();
+    });
+  }
+
+  function runImport() {
+    if (!lastResult) return;
+    var dedupe = 'replace';
+    var btn = $('invimp-run');
+    btn.disabled = true;
+    btn.textContent = 'Importing…';
+
+    var feesPromise = lastResult.feesRows > 0
+      ? api('importCsv', { target: 'daily_fees', csv: lastResult.feesCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-soa-multifile' } }, 'POST')
+      : Promise.resolve(null);
+
+    feesPromise.then(function(feesResult) {
+      if (lastResult.cashRows > 0) {
+        return api('importCsv', {
+          target: 'cash_ledger', csv: lastResult.cashCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-soa-multifile' }
+        }, 'POST').then(function(cashResult) { return { feesResult: feesResult, cashResult: cashResult }; });
+      }
+      return { feesResult: feesResult, cashResult: null };
+    }).then(function(both) {
+      if (lastResult.adsRows > 0) {
+        return api('importCsv', {
+          target: 'daily_ad_spend', csv: lastResult.adsCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-ads-manager' }
+        }, 'POST').then(function(adsResult) { return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: adsResult }; });
+      }
+      return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: null };
+    }).then(function(both) {
+      if (lastResult.salesRowCount > 0) {
+        return api('importCsv', {
+          target: 'daily_sales', csv: lastResult.salesCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-soa-orders' }
+        }, 'POST').then(function(salesResult) { return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: both.adsResult, salesResult: salesResult }; });
+      }
+      return { feesResult: both.feesResult, cashResult: both.cashResult, adsResult: both.adsResult, salesResult: null };
+    }).then(function(all) {
+      if (lastResult.invRows > 0) {
+        return api('importCsv', {
+          target: 'inventory_snapshots', csv: lastResult.invCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-stock-on-hand' }
+        }, 'POST').then(function(invResult) { return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: invResult }; });
+      }
+      return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: null };
+    }).then(function(all) {
+      var plainTargets = Object.keys(lastResult.plainCsvs || {});
+      var chain = Promise.resolve([]);
+      plainTargets.forEach(function(target) {
+        chain = chain.then(function(acc) {
+          return api('importCsv', {
+            target: target, csv: lastResult.plainCsvs[target].csv,
+            options: { dedupe: dedupe, source_file: 'upload-' + target }
+          }, 'POST').then(function(r) { return acc.concat([{ target: target, result: r }]); });
+        });
+      });
+      return chain.then(function(plainResults) {
+        return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: all.invResult, plainResults: plainResults };
+      });
+    }).then(function(all) {
+      var f = all.feesResult, c = all.cashResult, ad = all.adsResult, s = all.salesResult, iv = all.invResult, plains = all.plainResults || [];
+      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!ad || ad.ok !== false) && (!s || s.ok !== false) && (!iv || iv.ok !== false) &&
+        plains.every(function(p) { return p.result.ok !== false; });
+      var status = ok
+        ? '<div style="color:#15803d;font-weight:600">✓ Imported successfully. Refreshing…</div>'
+        : '<div style="color:#b91c1c;font-weight:600">✗ Something went wrong — see details.</div>';
+      var body = status +
+        (iv ? '<div style="margin-top:4px"><b>inventory_snapshots:</b> ' + (iv.ok === false ? escapeHtml(iv.error || 'failed') :
+          (iv.added + ' added, ' + iv.updated + ' updated, ' + iv.skipped_duplicate + ' dup skipped' +
+           ((iv.auto_created_warehouses && iv.auto_created_warehouses.length) ? ', ' + iv.auto_created_warehouses.length + ' new warehouse(s) — verify their city in Master Data' : ''))) + '</div>' : '') +
+        (f ? '<div style="margin-top:4px"><b>daily_fees:</b> ' + (f.ok === false ? escapeHtml(f.error || 'failed') :
+          (f.added + ' added, ' + f.updated + ' updated, ' + f.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
+        (c ? '<div style="margin-top:4px"><b>cash_ledger:</b> ' + (c.ok === false ? escapeHtml(c.error || 'failed') :
+          (c.added + ' added, ' + c.updated + ' updated, ' + c.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
+        (ad ? '<div style="margin-top:4px"><b>daily_ad_spend:</b> ' + (ad.ok === false ? escapeHtml(ad.error || 'failed') :
+          (ad.added + ' added, ' + ad.updated + ' updated, ' + ad.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
+        (s ? '<div style="margin-top:4px"><b>daily_sales:</b> ' + (s.ok === false ? escapeHtml(s.error || 'failed') :
+          (s.added + ' added, ' + s.updated + ' updated, ' + s.skipped_duplicate + ' dup skipped')) + '</div>' : '') +
+        plains.map(function(p) {
+          var r = p.result;
+          return '<div style="margin-top:4px"><b>' + escapeHtml(p.target) + ':</b> ' + (r.ok === false ? escapeHtml(r.error || 'failed') :
+            (r.added + ' added, ' + r.updated + ' updated, ' + r.skipped_duplicate + ' dup skipped')) + '</div>';
+        }).join('');
+      $('invimp-result').insertAdjacentHTML('beforeend', '<div class="alert ' + (ok ? 'low' : 'high') + '" style="margin-top:10px"><div class="sev">Done</div><div class="msg">' + body + '</div></div>');
+      btn.disabled = false;
+      btn.textContent = 'Import into the sheet';
+      if (ok) { setTimeout(function() { reloadCurrentView(); }, 900); }
+    }).catch(function(e) {
+      $('invimp-result').insertAdjacentHTML('beforeend', '<div class="alert high" style="margin-top:10px"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message || e) + '</div></div>');
+      btn.disabled = false;
+      btn.textContent = 'Import into the sheet';
+    });
+  }
+}
+
 function renderInventory(el) {
   setLoading(el);
   return api('inventory').then(function(d) {
     if (!d.rows || !d.rows.length) {
       el.innerHTML = '<div class="panel"><h2>Inventory</h2><div class="muted">No inventory snapshots in the DB yet.</div></div>';
+      renderInventoryUploadPanel_(el);
       return;
     }
     // Reorder panel
@@ -751,6 +977,7 @@ function renderInventory(el) {
     el.innerHTML = reorderHtml +
       '<div class="panel"><h2>Latest snapshot \u2014 ' + escapeHtml(d.snapshot_date) + '</h2>' +
       '<table><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Unsellable</th><th class="num">Damaged</th><th class="num">Lost</th><th class="num">7d sold</th><th class="num">30d sold</th><th class="num">Daily run</th><th class="num">Cover (d)</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+    renderInventoryUploadPanel_(el);
 
     // Wire "Log as issue" buttons
     Array.prototype.forEach.call(el.querySelectorAll('.mk-issue-btn'), function(btn) {
