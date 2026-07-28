@@ -175,6 +175,7 @@
       <div id="whoami">&mdash;</div>
       <div style="margin-top:6px"><a id="settings-link">Change API URL</a></div>
       <div style="margin-top:6px"><a id="token-link">Set Access Token</a></div>
+      <div style="margin-top:6px"><a id="ai-code-link">Set AI Access Code</a></div>
     </div>
   </aside>
 
@@ -236,6 +237,7 @@ var HARDCODED_API_URL = "https://script.google.com/macros/s/AKfycbzC74bRHIpSmRFx
 
 var LS_KEY = 'nh.apiUrl';
 var LS_TOKEN_KEY = 'nh.apiToken';
+var LS_AI_CODE_KEY = 'nh.aiCode';
 var state = { boot: null, charts: {}, filter: { from: null, to: null, platformId: '' } };
 
 // ---------- helpers ----------
@@ -278,10 +280,23 @@ function getApiToken() {
 function setApiToken(v) {
   try { localStorage.setItem(LS_TOKEN_KEY, v); } catch (e) {}
 }
+function getAiCode() {
+  try { return localStorage.getItem(LS_AI_CODE_KEY) || ''; } catch (e) { return ''; }
+}
+function setAiCode(v) {
+  try { localStorage.setItem(LS_AI_CODE_KEY, v); } catch (e) {}
+}
 
 // ---------- API calls ----------
 function api(action, params, method) {
   params = params || {};
+  // askClaude and generateBriefNow are the only two actions that cost real
+  // money (billed Claude API calls) — they require a separate AI access code
+  // on top of the general access token, so attach it automatically here
+  // rather than at every call site.
+  if (action === 'askClaude' || action === 'generateBriefNow') {
+    params = Object.assign({}, params, { aiCode: getAiCode() });
+  }
   method = method || 'GET';
   var base = getApiUrl();
   if (!base) return Promise.reject(new Error('API URL not configured'));
@@ -348,6 +363,13 @@ $('token-link').addEventListener('click', function() {
   setApiToken(next.trim());
   window.alert('Token saved. Reloading…');
   window.location.reload();
+});
+$('ai-code-link').addEventListener('click', function() {
+  var current = getAiCode();
+  var next = window.prompt('Paste the AI access code (from Script Properties → AI_ACCESS_CODE).\n\nThis is required to use Ask Strategist and the AI morning brief, since each call is a billed Claude API request — separate from your general dashboard access token.', current);
+  if (next === null) return; // cancelled
+  setAiCode(next.trim());
+  window.alert('AI access code saved.');
 });
 
 // ---------- init ----------
@@ -1537,6 +1559,21 @@ function renderAI(el) {
     renderHistory();
 
     api('askClaude', { question: q, session_id: sess.id }, 'POST').then(function(r) {
+      // The backend returns { ok:false, error:... } as a normal 200 response
+      // (not a thrown exception) when e.g. ANTHROPIC_API_KEY is missing \u2014 so
+      // this must be checked explicitly, otherwise r.reply is undefined and
+      // the chat silently renders a blank assistant bubble forever instead
+      // of ever showing the error (this is exactly what happened: the call
+      // came back near-instantly, it just had nothing to show).
+      if (r && r.ok === false) {
+        sess.messages.push({ role: 'assistant', content: '**Error:** ' + (r.error || 'Ask Strategist failed.') + '\n\nCheck: (1) ANTHROPIC_API_KEY is set in Apps Script Project Settings \u2192 Script Properties. (2) ai_conversations tab exists (run Night Hawk OS \u2192 Create missing tabs if not). (3) Your Anthropic account has credits.' });
+        sess.last_activity = Date.now();
+        sess.pending = false;
+        document.getElementById('ai-send').disabled = false;
+        renderHistory();
+        wireStarters();
+        return;
+      }
       sess.messages.push({ role: 'assistant', content: r.reply });
       sess.last_activity = Date.now();
       sess.pending = false;
