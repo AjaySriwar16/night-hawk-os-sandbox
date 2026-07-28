@@ -134,6 +134,11 @@
 </head>
 <body>
 
+<div id="boot-loading" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px;font-family:inherit;">
+  <span class="loading"></span>
+  <div style="color:var(--nh-gray-text,#64748b);font-size:13px">Loading Night Hawk OS… (first load after idle can take up to 30s while Google Apps Script wakes up)</div>
+</div>
+
 <div id="setup-root" class="hidden login-page">
   <div class="login-card">
     <div class="login-mark"><span class="dot"></span> NIGHT HAWK</div>
@@ -328,7 +333,12 @@ function api(action, params, method) {
 }
 
 // ---------- setup flow ----------
+function hideBootLoading() {
+  var bl = document.getElementById('boot-loading');
+  if (bl) bl.style.display = 'none';
+}
 function showSetup(preErr) {
+  hideBootLoading();
   $('app-root').classList.add('hidden');
   $('setup-root').classList.remove('hidden');
   if (HARDCODED_API_URL) setApiUrl(HARDCODED_API_URL);
@@ -378,6 +388,7 @@ function init() {
 
   api('boot').then(function(boot) {
     state.boot = boot;
+    hideBootLoading();
     $('app-root').classList.remove('hidden');
     $('setup-root').classList.add('hidden');
 
