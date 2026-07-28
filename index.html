@@ -290,11 +290,36 @@ function getApiToken() {
 function setApiToken(v) {
   try { localStorage.setItem(LS_TOKEN_KEY, v); } catch (e) {}
 }
+// The AI access code is only trusted for 10 minutes after it's entered —
+// after that it's treated as if it was never stored, so Ask Strategist
+// locks itself again and the code has to be re-typed. This is enforced
+// purely as a UX nicety on the client (getAiCode() below just stops
+// returning it once expired); the real security boundary is still the
+// server-side checkAiAccessCode_() check on every askClaude/
+// generateBriefNow call, which never trusts the client's clock.
+var AI_CODE_TTL_MS = 10 * 60 * 1000;
+function getAiCodeMeta() {
+  try {
+    var raw = localStorage.getItem(LS_AI_CODE_KEY);
+    if (!raw) return null;
+    var obj = JSON.parse(raw);
+    if (!obj || !obj.code || !obj.ts) return null;
+    if (Date.now() - obj.ts > AI_CODE_TTL_MS) {
+      localStorage.removeItem(LS_AI_CODE_KEY);
+      return null;
+    }
+    return obj;
+  } catch (e) { return null; }
+}
 function getAiCode() {
-  try { return localStorage.getItem(LS_AI_CODE_KEY) || ''; } catch (e) { return ''; }
+  var m = getAiCodeMeta();
+  return m ? m.code : '';
 }
 function setAiCode(v) {
-  try { localStorage.setItem(LS_AI_CODE_KEY, v); } catch (e) {}
+  try {
+    if (!v) { localStorage.removeItem(LS_AI_CODE_KEY); return; }
+    localStorage.setItem(LS_AI_CODE_KEY, JSON.stringify({ code: v, ts: Date.now() }));
+  } catch (e) {}
 }
 
 // ---------- API calls ----------
@@ -401,10 +426,10 @@ $('token-link').addEventListener('click', function() {
 });
 $('ai-code-link').addEventListener('click', function() {
   var current = getAiCode();
-  var next = window.prompt('Paste the AI access code (from Script Properties → AI_ACCESS_CODE).\n\nThis is required to use Ask Strategist and the AI morning brief, since each call is a billed Claude API request — separate from your general dashboard access token.', current);
+  var next = window.prompt('Paste the AI access code (from Script Properties → AI_ACCESS_CODE).\n\nThis is required to use Ask Strategist and the AI morning brief, since each call is a billed Claude API request — separate from your general dashboard access token. It expires 10 minutes after you enter it.', current);
   if (next === null) return; // cancelled
   setAiCode(next.trim());
-  window.alert('AI access code saved.');
+  window.alert('AI access code saved. It will expire in 10 minutes.');
 });
 
 // ---------- init ----------
@@ -1496,7 +1521,7 @@ function renderAI(el) {
       '<div class="ai-gate">' +
         '<div style="font-size:32px">🔒</div>' +
         '<h2>AI Access Code Required</h2>' +
-        '<p>Ask Strategist uses paid Claude API calls. Enter the AI access code to unlock it.</p>' +
+        '<p>Ask Strategist uses paid Claude API calls. Enter the AI access code to unlock it. Access expires after 10 minutes.</p>' +
         '<input type="password" id="ai-gate-input" placeholder="Enter AI access code" autocomplete="off">' +
         '<button id="ai-gate-submit">Unlock</button>' +
         '<div id="ai-gate-msg"></div>' +
@@ -1537,6 +1562,19 @@ function renderAI(el) {
 
   function renderChatUI() {
   var s = getOrCreateAISession();
+
+  // Re-lock the tab the moment the 10-minute AI access code window elapses,
+  // even if the user never navigates away or reloads — otherwise someone
+  // could keep chatting indefinitely off a code entered 10+ minutes ago.
+  clearTimeout(window.__aiCodeExpiryTimer);
+  (function scheduleExpiry() {
+    var meta = getAiCodeMeta();
+    if (!meta) return; // already expired/cleared — nothing to schedule
+    var remainingMs = AI_CODE_TTL_MS - (Date.now() - meta.ts);
+    window.__aiCodeExpiryTimer = setTimeout(function() {
+      if (currentView === 'ai') renderAI(el);
+    }, Math.max(remainingMs, 0) + 200);
+  })();
 
   // Simple markdown to HTML: **bold**, bullets, code, paragraphs
   function md(text) {
