@@ -1430,6 +1430,67 @@ function resetAISession() {
 }
 
 function renderAI(el) {
+  // Ask Strategist spends real money (billed Claude API calls), so this view
+  // is gated behind a separate AI access code — distinct from the general
+  // APP_ACCESS_TOKEN that unlocks the rest of the dashboard. We show a lock
+  // screen and verify the code via the cheap, no-Claude-call
+  // 'verifyAiAccessCode' action before ever rendering the chat UI.
+  el.innerHTML = '<div class="muted" style="padding:60px;text-align:center"><span class="loading"></span> Checking access…</div>';
+  api('verifyAiAccessCode', { aiCode: getAiCode() }).then(function(r) {
+    if (r && r.valid) { renderChatUI(); } else { renderGate(''); }
+  }).catch(function() {
+    // If the check itself fails (network hiccup etc.), don't permanently
+    // lock the user out over a transient error — the real spend-protection
+    // is still enforced server-side on the actual askClaude call.
+    renderChatUI();
+  });
+
+  function renderGate(errMsg) {
+    el.innerHTML =
+      '<style>' +
+      '.ai-gate { max-width:420px; margin:60px auto; text-align:center; background:#fff; border:1px solid var(--nh-gray-line); border-radius:12px; padding:36px 30px; }' +
+      '.ai-gate h2 { margin:10px 0 6px; color:var(--nh-navy); font-size:18px; }' +
+      '.ai-gate p { font-size:13px; color:var(--nh-gray-text); line-height:1.5; margin-bottom:18px; }' +
+      '.ai-gate input { width:100%; padding:10px; border:1px solid var(--nh-gray-line); border-radius:6px; font-size:13px; margin-bottom:12px; text-align:center; box-sizing:border-box; }' +
+      '.ai-gate button { width:100%; padding:10px; border:0; background:var(--nh-navy); color:#fff; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; }' +
+      '.ai-gate button:disabled { background:var(--nh-gray-line); cursor:not-allowed; }' +
+      '.ai-gate .err { color:var(--nh-err); font-size:12px; margin-top:10px; }' +
+      '</style>' +
+      '<div class="ai-gate">' +
+        '<div style="font-size:32px">🔒</div>' +
+        '<h2>AI Access Code Required</h2>' +
+        '<p>Ask Strategist uses paid Claude API calls. Enter the AI access code to unlock it.</p>' +
+        '<input type="password" id="ai-gate-input" placeholder="Enter AI access code" autocomplete="off">' +
+        '<button id="ai-gate-submit">Unlock</button>' +
+        (errMsg ? '<div class="err">' + escapeHtml(errMsg) + '</div>' : '') +
+      '</div>';
+    var inp = document.getElementById('ai-gate-input');
+    var btn = document.getElementById('ai-gate-submit');
+    function trySubmit() {
+      var code = (inp.value || '').trim();
+      if (!code) return;
+      btn.disabled = true; btn.textContent = 'Checking…';
+      api('verifyAiAccessCode', { aiCode: code }).then(function(r) {
+        if (r && r.valid) {
+          setAiCode(code);
+          window.alert('Access granted.');
+          renderChatUI();
+        } else {
+          btn.disabled = false; btn.textContent = 'Unlock';
+          window.alert('Access denied: wrong code.');
+          renderGate('Incorrect code — try again.');
+        }
+      }).catch(function(e) {
+        btn.disabled = false; btn.textContent = 'Unlock';
+        window.alert('Could not verify code: ' + (e && e.message ? e.message : e));
+      });
+    }
+    btn.addEventListener('click', trySubmit);
+    inp.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); trySubmit(); } });
+    setTimeout(function() { if (inp) inp.focus(); }, 50);
+  }
+
+  function renderChatUI() {
   var s = getOrCreateAISession();
 
   // Simple markdown to HTML: **bold**, bullets, code, paragraphs
@@ -1604,12 +1665,13 @@ function renderAI(el) {
   document.getElementById('ai-reset').addEventListener('click', function() {
     if (confirm('Clear the conversation and start a new session?')) {
       resetAISession();
-      renderAI(el);
+      renderChatUI();
     }
   });
 
   // Auto-focus the input
   setTimeout(function() { var inp = document.getElementById('ai-input'); if (inp) inp.focus(); }, 50);
+  } // end renderChatUI
 }
 
 function renderBrief(el) {
