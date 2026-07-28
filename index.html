@@ -298,7 +298,7 @@ function setAiCode(v) {
 }
 
 // ---------- API calls ----------
-function api(action, params, method) {
+function apiOnce_(action, params, method) {
   params = params || {};
   // askClaude and generateBriefNow are the only two actions that cost real
   // money (billed Claude API calls) — they require a separate AI access code
@@ -330,10 +330,30 @@ function api(action, params, method) {
     var json;
     try { json = JSON.parse(text); }
     catch (e) {
-      throw new Error('Server did not return JSON. Check that the Apps Script deployment has "Anyone" access.\n\nFirst 200 chars: ' + text.slice(0, 200));
+      var err = new Error('Server did not return JSON. Check that the Apps Script deployment has "Anyone" access.\n\nFirst 200 chars: ' + text.slice(0, 200));
+      err.nonJson = true;
+      throw err;
     }
     if (!json.ok) throw new Error(json.error || 'API error');
     return json.data;
+  });
+}
+
+// A non-JSON response almost always means Google's own front-end gateway
+// gave up waiting on a slow/cold-starting Apps Script execution and served
+// an interstitial HTML page instead of the real response — not a real,
+// persistent failure. Retrying the exact same call a few seconds later
+// routinely succeeds once the script has warmed up (observed directly:
+// a cold boot() call took ~25s and came back this way, the very next call
+// took 3-6s and returned clean JSON). So: retry once, silently, before
+// surfacing an error to the view.
+function api(action, params, method) {
+  return apiOnce_(action, params, method).catch(function(e) {
+    if (e && e.nonJson) {
+      return new Promise(function(resolve) { setTimeout(resolve, 1500); })
+        .then(function() { return apiOnce_(action, params, method); });
+    }
+    throw e;
   });
 }
 
