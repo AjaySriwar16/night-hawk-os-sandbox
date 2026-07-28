@@ -1455,6 +1455,7 @@ function renderAI(el) {
       '.ai-gate button { width:100%; padding:10px; border:0; background:var(--nh-navy); color:#fff; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; }' +
       '.ai-gate button:disabled { background:var(--nh-gray-line); cursor:not-allowed; }' +
       '.ai-gate .err { color:var(--nh-err); font-size:12px; margin-top:10px; }' +
+      '.ai-gate .ok { color:#1a7f4e; font-size:12px; margin-top:10px; }' +
       '</style>' +
       '<div class="ai-gate">' +
         '<div style="font-size:32px">🔒</div>' +
@@ -1462,27 +1463,35 @@ function renderAI(el) {
         '<p>Ask Strategist uses paid Claude API calls. Enter the AI access code to unlock it.</p>' +
         '<input type="password" id="ai-gate-input" placeholder="Enter AI access code" autocomplete="off">' +
         '<button id="ai-gate-submit">Unlock</button>' +
+        '<div id="ai-gate-msg"></div>' +
         (errMsg ? '<div class="err">' + escapeHtml(errMsg) + '</div>' : '') +
       '</div>';
     var inp = document.getElementById('ai-gate-input');
     var btn = document.getElementById('ai-gate-submit');
+    var msg = document.getElementById('ai-gate-msg');
+    // Note: deliberately no window.alert()/confirm() here — those are
+    // blocking native dialogs that freeze the whole page's script execution
+    // until dismissed, which reads as the app being "stuck" if the dialog
+    // isn't immediately noticed. Status is shown inline instead.
     function trySubmit() {
       var code = (inp.value || '').trim();
       if (!code) return;
       btn.disabled = true; btn.textContent = 'Checking…';
+      msg.className = ''; msg.textContent = '';
       api('verifyAiAccessCode', { aiCode: code }).then(function(r) {
         if (r && r.valid) {
           setAiCode(code);
-          window.alert('Access granted.');
-          renderChatUI();
+          msg.className = 'ok'; msg.textContent = 'Access granted — loading Ask Strategist…';
+          setTimeout(renderChatUI, 300);
         } else {
           btn.disabled = false; btn.textContent = 'Unlock';
-          window.alert('Access denied: wrong code.');
-          renderGate('Incorrect code — try again.');
+          msg.className = 'err'; msg.textContent = 'Access denied: wrong code. Try again.';
+          inp.value = '';
+          inp.focus();
         }
       }).catch(function(e) {
         btn.disabled = false; btn.textContent = 'Unlock';
-        window.alert('Could not verify code: ' + (e && e.message ? e.message : e));
+        msg.className = 'err'; msg.textContent = 'Could not verify code: ' + (e && e.message ? e.message : e);
       });
     }
     btn.addEventListener('click', trySubmit);
