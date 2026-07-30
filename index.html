@@ -449,8 +449,11 @@ function init() {
     });
     sel.innerHTML = opts.join('');
 
+    // Default filter: always the current calendar month (1st of this month
+    // through today), recomputed fresh on every load — not a fixed lookback
+    // window, so it naturally rolls forward as months change.
     var to = new Date();
-    var from = new Date(to.getTime() - 89*86400000);
+    var from = new Date(to.getFullYear(), to.getMonth(), 1);
     $('date-from').value = fmtD(from);
     $('date-to').value = fmtD(to);
     state.filter.from = fmtD(from);
