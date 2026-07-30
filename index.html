@@ -636,7 +636,13 @@ function renderDashboard(el) {
           { label: 'Cans', data: d.series.map(function(r){return r.units;}), borderColor: '#F5B700', backgroundColor: 'rgba(245,183,0,0.12)', tension: 0.3, yAxisID: 'y1' }
         ]
       },
-      options: { responsive: true, maintainAspectRatio: false, scales: { y: { type: 'linear', position: 'left' }, y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } } } }
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 10 } },
+          y: { type: 'linear', position: 'left' }, y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } }
+        }
+      }
     });
     state.charts['chart-costs'] = new Chart($('chart-costs'), {
       type: 'bar',
@@ -647,7 +653,7 @@ function renderDashboard(el) {
           { label: 'Storage fee (\u20B9)', data: d.series.map(function(r){return r.storage_fee;}), backgroundColor: '#BF1A2F' }
         ]
       },
-      options: { responsive: true, maintainAspectRatio: false }
+      options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 10 } } } }
     });
     state.charts['chart-city'] = new Chart($('chart-city'), {
       type: 'doughnut',
@@ -740,6 +746,7 @@ function renderUnitEcon(el) {
     var k = d.kpis; var units = k.units || 1;
     var rows = [
       ['Revenue / can', k.revenue / units],
+      ['COGS / can', k.cogs / units],
       ['Ad spend / can', k.ad_spend / units],
       ['Storage / can', k.storage_fee / units],
       ['Shipping / can', k.shipping_fee / units],
@@ -747,8 +754,14 @@ function renderUnitEcon(el) {
       ['TDS / can', k.tds / units],
       ['Lost/Damaged / can', k.lost_damaged / units]
     ];
-    var totalCostU = (k.ad_spend + k.platform_cost) / units;
-    var cmU = (k.revenue - k.ad_spend - k.platform_cost) / units;
+    // Use the backend's own cost_per_unit/cm_per_unit (COGS + Ads + Platform
+    // fees, same definition as the Dashboard tab's "Cost / Can" and "CM /
+    // Can" tiles) instead of a locally-recomputed, COGS-excluded total \u2014
+    // this view used to leave COGS out entirely, which understated total
+    // cost and overstated margin, and disagreed with the Dashboard's own
+    // numbers for the same range.
+    var totalCostU = k.cost_per_unit;
+    var cmU = k.cm_per_unit;
     var rowsHtml = rows.map(function(x) {
       var name = x[0], v = x[1];
       return '<tr><td>' + escapeHtml(name) + '</td>' +
@@ -758,8 +771,8 @@ function renderUnitEcon(el) {
     el.innerHTML =
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Revenue / Can</div><div class="value">\u20B9' + (k.revenue/units).toFixed(2) + '</div><div class="sub">' + k.units + ' cans</div></div>' +
-        '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">\u20B9' + totalCostU.toFixed(2) + '</div><div class="sub">Ads + Platform (excl COGS)</div></div>' +
-        '<div class="kpi ' + (cmU >=0 ? 'ok' : 'err') + '"><div class="label">CM / Can</div><div class="value">\u20B9' + cmU.toFixed(2) + '</div><div class="sub">Revenue \u2212 (Ads + Platform)</div></div>' +
+        '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">\u20B9' + totalCostU.toFixed(2) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
+        '<div class="kpi ' + (cmU >=0 ? 'ok' : 'err') + '"><div class="label">CM / Can</div><div class="value">\u20B9' + cmU.toFixed(2) + '</div><div class="sub">Revenue \u2212 Total cost</div></div>' +
       '</div>' +
       '<div class="panel"><h2>Cost decomposition (per can)</h2>' +
       '<table><thead><tr><th>Line</th><th class="num">\u20B9 / can</th><th class="num">% of Revenue</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
