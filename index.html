@@ -1116,7 +1116,8 @@ function renderComplaints(el) {
       '<div class="panel"><h2>Complaint &amp; return rate by SKU</h2>' +
       '<div class="desc">"Returns" = delivered then physically sent back by the customer. "Cancelled" = order cancelled before delivery (already netted out of sales) — a separate, much more common event, shown here for visibility only.</div>' +
       '<table><thead><tr><th>SKU</th><th class="num">Units sold</th><th class="num">Complaints</th><th class="num">Complaint %</th><th class="num">Returns</th><th class="num">Return %</th><th class="num">Cancelled</th></tr></thead><tbody>' + summary + '</tbody></table></div>' +
-      '<div class="panel"><h2>Complaint log</h2>' +
+      '<div class="panel"><h2>Activity log</h2>' +
+      '<div class="desc">Every complaint, return and cancelled order in this range — see the Type column for which is which.</div>' +
       '<table><thead><tr><th>Date</th><th>SKU</th><th>City</th><th>Type</th><th class="num">Units</th><th>Reason</th><th>Status</th></tr></thead><tbody>' + log + '</tbody></table></div>';
   });
 }
