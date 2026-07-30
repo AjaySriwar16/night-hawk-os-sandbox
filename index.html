@@ -3346,6 +3346,9 @@ function renderImport(el) {
           (s.added + ' added, ' + s.updated + ' updated, ' + s.skipped_duplicate + ' dup skipped' +
            ((s.auto_created_cities && s.auto_created_cities.length) ? ', ' + s.auto_created_cities.length + ' new city/cities' : '') +
            ((s.auto_created_skus && s.auto_created_skus.length) ? ', ' + s.auto_created_skus.length + ' new SKU(s)' : ''))) + '</div>' : '') +
+        (s && s.ok !== false && ((s.returns_added||0) + (s.returns_updated||0) > 0) ?
+          '<div style="margin-top:4px"><b>complaints_returns:</b> ' + s.returns_added + ' added, ' + s.returns_updated + ' updated ' +
+          '<span class="muted" style="font-size:11px">(cancelled/returned orders netted out of daily_sales, now also logged here so they\'re visible — see the Complaints &amp; Returns view)</span></div>' : '') +
         (iv ? '<div style="margin-top:4px"><b>inventory_snapshots:</b> ' + (iv.ok === false ? escapeHtml(iv.error || 'failed') :
           (iv.added + ' added, ' + iv.updated + ' updated, ' + iv.skipped_duplicate + ' dup skipped' +
            ((iv.auto_created_warehouses && iv.auto_created_warehouses.length) ? ', ' + iv.auto_created_warehouses.length + ' new warehouse(s) — verify their city in Master Data' : ''))) + '</div>' : '') +
@@ -3450,7 +3453,8 @@ function renderImport(el) {
           '</div>' +
           (newCities.length ? '<div class="muted" style="font-size:11px;margin-top:6px">' + newCities.length + ' new city/cities not seen before were added to the cities tab automatically — double-check state/status.</div>' : '') +
           (newSkus.length ? '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">' + newSkus.length + ' new SKU(s) not seen before were added to the skus tab automatically — COGS was left blank and needs to be entered manually before margin figures for these SKUs can be trusted.</div>' : '') +
-          (stats2.no_price_column ? '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">No price column found — revenue (value) is 0 for every row.</div>' : '');
+          (stats2.no_price_column ? '<div class="muted" style="font-size:11px;margin-top:6px;color:#b45309">No price column found — revenue (value) is 0 for every row.</div>' : '') +
+          (((r.returns_added||0) + (r.returns_updated||0) > 0) ? '<div class="muted" style="font-size:11px;margin-top:6px">' + r.returns_added + ' added / ' + r.returns_updated + ' updated in complaints_returns — cancelled/returned orders are now also logged there, not just netted out of the total.</div>' : '');
 
         $('imp-paste-out').innerHTML = '<div class="alert ' + (newSkus.length ? 'medium' : 'low') + '"><div class="sev">Done</div><div class="msg">' + body2 + '</div></div>';
         $('imp-paste-run').disabled = false;
