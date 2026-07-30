@@ -1092,7 +1092,7 @@ function renderInventory(el) {
 
 function renderComplaints(el) {
   setLoading(el);
-  return api('complaints').then(function(d) {
+  return api('complaints', { from: state.filter.from, to: state.filter.to }).then(function(d) {
     var summary = d.bySku.map(function(s) {
       var flag = s.complaint_pct > 5 ? 'pill-err' : (s.complaint_pct > 2 ? 'pill-warn' : 'pill-ok');
       return '<tr><td>' + escapeHtml(s.sku || s.sku_id) + '</td>' +
