@@ -1962,11 +1962,11 @@ function renderBrief(el) {
              '<td class="num">' + inr(c.value) + '</td></tr>';
     }).join('');
     html += '<div class="two-col">' +
-      '<div class="panel"><h2>Top SKUs yesterday</h2>' +
-        (topSkusRows ? '<table><thead><tr><th>SKU</th><th class="num">Units</th><th class="num">\u0394</th><th class="num">Revenue</th></tr></thead><tbody>' + topSkusRows + '</tbody></table>' : '<div class="muted">No sales.</div>') +
+      '<div class="panel"><h2>Top SKUs \u2014 ' + escapeHtml(d.latest_date) + '</h2>' +
+        (topSkusRows ? '<table><thead><tr><th>SKU</th><th class="num">Units</th><th class="num">\u0394 vs ' + escapeHtml(d.previous_date || 'prior day') + '</th><th class="num">Revenue</th></tr></thead><tbody>' + topSkusRows + '</tbody></table>' : '<div class="muted">No sales.</div>') +
       '</div>' +
-      '<div class="panel"><h2>Top cities yesterday</h2>' +
-        (topCitiesRows ? '<table><thead><tr><th>City</th><th class="num">Units</th><th class="num">\u0394</th><th class="num">Revenue</th></tr></thead><tbody>' + topCitiesRows + '</tbody></table>' : '<div class="muted">No sales.</div>') +
+      '<div class="panel"><h2>Top cities \u2014 ' + escapeHtml(d.latest_date) + '</h2>' +
+        (topCitiesRows ? '<table><thead><tr><th>City</th><th class="num">Units</th><th class="num">\u0394 vs ' + escapeHtml(d.previous_date || 'prior day') + '</th><th class="num">Revenue</th></tr></thead><tbody>' + topCitiesRows + '</tbody></table>' : '<div class="muted">No sales.</div>') +
       '</div></div>';
 
     // Stockout alerts
