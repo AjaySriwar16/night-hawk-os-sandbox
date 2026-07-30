@@ -2300,7 +2300,14 @@ function wireDecisionForm(existing, parentEl) {
 // per-file try/catch in soaAggregateFiles.
 
 var SOA_SHEET_TYPES = [
-  { type: 'forward_orders',     names: ['forward orders'] },
+  // 'sales summary' is Blinkit's standalone "Sales Summary" export (seller
+  // dashboard -> Sales Performance -> Reports) — same row shape as Forward
+  // Orders (Order Date, Item Id, Customer City, Order Status, Quantity,
+  // Selling Price) but with no fee/commission columns at all, so routing it
+  // through soaExtractOrders_ as 'forward' contributes sales rows only and
+  // silently no-ops the fee extraction (nothing to find) — exactly the
+  // "sales-only upload" behaviour this alias exists for.
+  { type: 'forward_orders',     names: ['forward orders', 'sales summary'] },
   { type: 'cancelled_orders',   names: ['cancelled or returned orders', 'return orders'] },
   { type: 'upfront_storage',    names: ['upfront storage charges'] },
   { type: 'daily_ageing',       names: ['daily ageing'] },
@@ -2327,7 +2334,7 @@ var SOA_SHEET_TYPES = [
 // matched exactly by name above. All keywords in a group must appear as
 // substrings of the (normalised) sheet name for it to count as a match.
 var SOA_SHEET_FALLBACK = [
-  { type: 'forward_orders',     any: [['forward', 'order']] },
+  { type: 'forward_orders',     any: [['forward', 'order'], ['sales', 'summary']] },
   { type: 'cancelled_orders',   any: [['cancel'], ['return', 'order']] },
   { type: 'upfront_storage',    any: [['upfront', 'storage']] },
   { type: 'daily_ageing',       any: [['daily', 'age']] },
@@ -2457,7 +2464,13 @@ function soaExtractOrders_(rows, dailyFees, unassigned, sourceLabel, kind, sales
   // Charge (Rs)" etc — the "(Rs)" survives normalisation as a trailing
   // "rs", so both the with- and without-suffix forms are matched in case
   // Blinkit drops the unit suffix in a future export.
-  var hdr = soaFindHeaderRow_(rows, [['orderdate', 'returnorderdate'], ['commissionchargers', 'commissioncharge']]);
+  // Second group also accepts 'itemid' as a satisfying column — Blinkit's
+  // standalone Sales Summary export (see the 'sales summary' alias in
+  // SOA_SHEET_TYPES above) has no commission/shipping columns at all, so
+  // without this it would fail to find a header row here and silently
+  // extract zero sales rows despite having everything salesRows actually
+  // needs (order date, status, city, item id, quantity, price).
+  var hdr = soaFindHeaderRow_(rows, [['orderdate', 'returnorderdate'], ['commissionchargers', 'commissioncharge', 'itemid']]);
   if (!hdr) return 0;
   var colIx = hdr.colIx, n = 0;
   for (var r = hdr.headerRowIx + 1; r < rows.length; r++) {
@@ -2992,7 +3005,7 @@ function Utilities_yyyymm_() { var d = new Date(); return d.getFullYear() + Stri
 function renderImport(el) {
   el.innerHTML =
     '<div class="panel"><h2>Import data</h2>' +
-    '<div class="desc">Upload whatever Blinkit gave you — a full monthly SOA/payout folder (Payout Breakup, Forward Orders, Storage Charges, etc), a single Blinkit export, or one of this app\'s own CSVs. Everything is read in your browser and routed to the right place automatically by matching sheet names and column headers — there\'s nothing to pick by hand. Re-uploading a month always corrects it in place rather than creating duplicates.</div>' +
+    '<div class="desc">Upload whatever Blinkit gave you — a full monthly SOA/payout folder (Payout Breakup, Forward Orders, Storage Charges, etc), a standalone <b>Sales Summary</b> export (Blinkit seller dashboard → Sales Performance → Reports) to refresh sales numbers only, or one of this app\'s own CSVs. Everything is read in your browser and routed to the right place automatically by matching sheet names and column headers — there\'s nothing to pick by hand. Re-uploading a month always corrects it in place rather than creating duplicates.</div>' +
 
 
     '<div style="display:flex;gap:0;border-bottom:1px solid var(--nh-gray-line);margin-bottom:14px">' +
