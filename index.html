@@ -2508,9 +2508,17 @@ function soaExtractOrders_(rows, dailyFees, unassigned, sourceLabel, kind, sales
       var price = soaNum_(soaCell_(row, colIx, ['sellingpricers', 'sellingprice']));
       if (date && city && itemId && qty) {
         if (kind === 'forward' && status === 'DELIVERED') {
-          salesRows.push([date, 'DELIVERED', city, itemId, qty, price]);
+          salesRows.push([date, 'DELIVERED', city, itemId, qty, price, '']);
         } else if (kind === 'cancelled') {
-          salesRows.push([date, 'DELIVERED', city, itemId, -qty, price]);
+          // This sheet's OWN Order Status column distinguishes a true
+          // cancellation (order never delivered) from a line that WAS
+          // delivered and is only here because it was later returned by
+          // the customer — a real, separate, physical return. Carried
+          // through as an extra CSV column (see soaSalesRowsToCsv_) so the
+          // backend can log it to complaints_returns as the right type
+          // instead of lumping every negative-qty line together.
+          var crType = status === 'DELIVERED' ? 'return' : 'cancelled';
+          salesRows.push([date, 'DELIVERED', city, itemId, -qty, price, crType]);
         }
       }
     }
@@ -2961,7 +2969,7 @@ function soaPlainImportsToCsvs_(plainImports) {
 // backend unmodified (auto-creates unrecognised cities/SKUs, dedupes,
 // etc. — all already built and deployed for that importer).
 function soaSalesRowsToCsv_(salesRows) {
-  var lines = ['Order Date,Order Status,Supply City,Item Id,Quantity,Selling Price (Rs)'];
+  var lines = ['Order Date,Order Status,Supply City,Item Id,Quantity,Selling Price (Rs),CR Type'];
   salesRows.forEach(function(r) { lines.push(r.map(soaCsvField_).join(',')); });
   return lines.join('\n');
 }
