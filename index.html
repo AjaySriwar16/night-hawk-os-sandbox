@@ -57,6 +57,9 @@
 
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .brief-kpi-grid { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 720px) { .brief-kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 480px) { .brief-kpi-grid { grid-template-columns: 1fr; } }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--nh-gray-line); }
@@ -1942,7 +1945,7 @@ function renderBrief(el) {
       '<div class="muted">Good morning. Here\'s what happened on <b>' + escapeHtml(d.latest_date) + '</b>' +
       (d.previous_date ? ' vs <b>' + escapeHtml(d.previous_date) + '</b>' : '') + '.</div>' +
       staleBadge + '</div>' +
-      '<div class="kpi-grid">' +
+      '<div class="kpi-grid brief-kpi-grid">' +
         '<div class="kpi"><div class="label">Cans sold</div><div class="value">' + s.units + '</div>' +
           '<div class="sub">' + deltaPill(d.sales.delta_units) + ' vs prev. Week avg ' + w.avg_units + '/d</div></div>' +
         '<div class="kpi"><div class="label">Revenue</div><div class="value">' + inr(s.revenue) + '</div>' +
