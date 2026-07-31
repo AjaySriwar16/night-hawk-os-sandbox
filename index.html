@@ -1193,7 +1193,9 @@ function renderBudget(el) {
       var varianceHtml = noBudget
         ? '<div class="value">—</div><div class="sub">no budget set this month</div>'
         : '<div class="value">' + inr(data.projectedVariance) + '</div><div class="sub">at month-end</div>';
-      var linesHtml = data.lines.map(function(r) {
+      var linesHtml = !data.lines.length
+        ? '<tr><td colspan="6" style="text-align:center;color:var(--nh-gray-text);padding:18px 8px">No budget line items set for this month. Add rows to the <code>monthly_budget</code> tab (one per line item, e.g. "Ad spend", "Storage fee") to see budget vs. actual here.</td></tr>'
+        : data.lines.map(function(r) {
         var actualTxt = r.actual == null ? '<span class="muted">\u2014</span>' : inr(r.actual);
         var deltaTxt = r.delta == null ? '<span class="muted">\u2014</span>' : (
           r.delta >= 0
