@@ -662,8 +662,20 @@ function renderDashboard(el) {
     });
     state.charts['chart-sku'] = new Chart($('chart-sku'), {
       type: 'bar',
-      data: { labels: d.bySku.map(function(s){return s.name;}), datasets: [{ label: 'Revenue', data: d.bySku.map(function(s){return s.value;}), backgroundColor: '#0B3954' }] },
-      options: { indexAxis: 'y', plugins: { legend: { display: false } }, maintainAspectRatio: false }
+      data: {
+        labels: d.bySku.map(function(s){return s.name + '  (' + s.units + ' units)';}),
+        datasets: [{ label: 'Revenue', data: d.bySku.map(function(s){return s.value;}), backgroundColor: '#0B3954' }]
+      },
+      options: {
+        indexAxis: 'y', maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: function(ctx) {
+            var s = d.bySku[ctx.dataIndex];
+            return 'Revenue: ' + inr(s.value) + '  •  Units: ' + s.units;
+          } } }
+        }
+      }
     });
   });
 }
