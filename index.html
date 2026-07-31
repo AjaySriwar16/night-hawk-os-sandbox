@@ -670,7 +670,14 @@ function renderDashboard(el) {
 function destroyChart(id) { if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; } }
 
 function renderBudgetSnapshotHtml(b, month) {
-  if (!b) {
+  // Guard against the "0 budget lines" case, not just a failed/missing API
+  // call: with totalBudget=0 but real tracked actuals still > 0 (ads/
+  // storage/shipping/commission don't require a budget line to exist),
+  // the math below produces a technically-correct but deeply misleading
+  // panel \u2014 e.g. "Remaining: -\u20b984,410" and a red "Projected variance"
+  // that reads like a budget overrun, when the real story is simply that
+  // no budget has been entered for this month yet.
+  if (!b || !b.totalBudget) {
     return '<div class="panel"><h2>Budget snapshot \u2014 ' + escapeHtml(month) + '</h2>' +
            '<div class="muted">No budget for this month. Add rows to the <code>monthly_budget</code> tab to see a snapshot.</div></div>';
   }
@@ -796,7 +803,7 @@ function renderAds(el) {
         { label: 'Ad spend (\u20B9)', data: d.rows.map(function(r){return r.ad_spend;}), backgroundColor: '#087E8B' },
         { label: 'Revenue (\u20B9)', data: d.rows.map(function(r){return r.revenue;}), backgroundColor: '#0B3954' }
       ]},
-      options: { responsive: true, maintainAspectRatio: false }
+      options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 10 } } } }
     });
   });
 }
@@ -1171,8 +1178,21 @@ function renderBudget(el) {
   $('bud-load').addEventListener('click', function() {
     $('bud-body').innerHTML = '<span class="loading"></span> Loading\u2026';
     api('budget', { month: $('bud-month').value }).then(function(data) {
-      var pctCls = data.pctUsed > 110 ? 'err' : (data.pctUsed > 90 ? 'warn' : 'ok');
-      var varianceCls = data.projectedVariance >= 0 ? 'ok' : 'err';
+      // With no budget entered for this month (totalBudget=0), "Remaining"
+      // and "Projected variance" are still real, tracked-actuals-vs-zero
+      // arithmetic — technically correct, but reads exactly like a bad
+      // budget overrun (big red negative numbers) when the real story is
+      // just "no budget has been set yet". Show a neutral placeholder for
+      // those two instead in that case.
+      var noBudget = !data.totalBudget;
+      var pctCls = noBudget ? '' : (data.pctUsed > 110 ? 'err' : (data.pctUsed > 90 ? 'warn' : 'ok'));
+      var varianceCls = noBudget ? '' : (data.projectedVariance >= 0 ? 'ok' : 'err');
+      var remainingHtml = noBudget
+        ? '<div class="value">—</div><div class="sub">no budget set this month</div>'
+        : '<div class="value">' + inr(data.remaining) + '</div><div class="sub">after tracked spend</div>';
+      var varianceHtml = noBudget
+        ? '<div class="value">—</div><div class="sub">no budget set this month</div>'
+        : '<div class="value">' + inr(data.projectedVariance) + '</div><div class="sub">at month-end</div>';
       var linesHtml = data.lines.map(function(r) {
         var actualTxt = r.actual == null ? '<span class="muted">\u2014</span>' : inr(r.actual);
         var deltaTxt = r.delta == null ? '<span class="muted">\u2014</span>' : (
@@ -1198,10 +1218,10 @@ function renderBudget(el) {
         '<div class="kpi-grid">' +
           '<div class="kpi"><div class="label">Total Budget</div><div class="value">' + inr(data.totalBudget) + '</div><div class="sub">' + escapeHtml(data.month) + ' \u00B7 ' + data.daysInMonth + ' days</div></div>' +
           '<div class="kpi ' + pctCls + '"><div class="label">Spent (tracked)</div><div class="value">' + inr(data.totalActualTracked) + '</div><div class="sub">' + data.pctUsed + '% of budget</div></div>' +
-          '<div class="kpi"><div class="label">Remaining</div><div class="value">' + inr(data.remaining) + '</div><div class="sub">after tracked spend</div></div>' +
+          '<div class="kpi"><div class="label">Remaining</div>' + remainingHtml + '</div>' +
           '<div class="kpi"><div class="label">Day ' + data.daysElapsed + ' of ' + data.daysInMonth + '</div><div class="value">' + data.daysRemaining + 'd</div><div class="sub">left in month</div></div>' +
           '<div class="kpi"><div class="label">Run-rate / day</div><div class="value">' + inr(data.runRatePerDay) + '</div><div class="sub">on tracked lines</div></div>' +
-          '<div class="kpi ' + varianceCls + '"><div class="label">Projected variance</div><div class="value">' + inr(data.projectedVariance) + '</div><div class="sub">at month-end</div></div>' +
+          '<div class="kpi ' + varianceCls + '"><div class="label">Projected variance</div>' + varianceHtml + '</div>' +
         '</div>' +
         '<h3 style="margin:18px 0 8px">Line-by-line</h3>' +
         '<table><thead><tr>' +
