@@ -1159,17 +1159,178 @@ function renderComplaints(el) {
 
 function renderExpansion(el) {
   setLoading(el);
-  return api('expansion').then(function(rows) {
-    var html = rows.map(function(r) {
-      var statusPill = r.status==='active'?'pill-ok':(r.status==='paused'?'pill-warn':'pill-info');
-      return '<tr><td>' + escapeHtml(r.sku) + '</td><td>' + escapeHtml(r.city) + '</td>' +
-             '<td>' + escapeHtml(r.start_date) + '</td><td>' + escapeHtml(r.end_date) + '</td>' +
-             '<td>' + escapeHtml(r.target_level) + '</td>' +
-             '<td><span class="pill ' + statusPill + '">' + escapeHtml(r.status) + '</span></td>' +
-             '<td>' + escapeHtml(r.notes||'') + '</td></tr>';
-    }).join('');
-    el.innerHTML = '<div class="panel"><h2>Expansion plan</h2>' +
-      '<table><thead><tr><th>SKU</th><th>City</th><th>Start</th><th>End</th><th>Target</th><th>Status</th><th>Notes</th></tr></thead><tbody>' + html + '</tbody></table></div>';
+  return api('expansion').then(function(d) {
+    if (d.missing_tab) {
+      el.innerHTML = '<div class="panel"><h2>Expansion &amp; Experiments</h2>' +
+        '<div class="alert medium"><div class="sev">Setup</div><div class="msg"><b>expansion_plan tab not found</b>Open your Google Sheet, then Night Hawk OS menu &rarr; "Create missing tabs (upgrade)".</div></div></div>';
+      return;
+    }
+    var rows = d.rows || [];
+    var summary = { planned: 0, active: 0, paused: 0, completed: 0, cancelled: 0 };
+    rows.forEach(function(r) { if (summary[r.status] !== undefined) summary[r.status]++; });
+    var statusPill = { planned: 'pill-info', active: 'pill-ok', paused: 'pill-warn', completed: 'pill-info', cancelled: 'pill-err' };
+
+    function num(n) { return n == null ? '<span class="muted">—</span>' : n.toLocaleString('en-IN'); }
+    function money(n) { return n == null ? '<span class="muted">—</span>' : inr(n); }
+
+    el.innerHTML =
+      '<div class="panel">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+        '<h2 style="margin:0">Expansion &amp; Experiments</h2>' +
+        '<button id="new-exp-btn" style="padding:7px 14px;border:0;background:var(--nh-navy);color:#fff;border-radius:6px;cursor:pointer">+ New expansion</button>' +
+      '</div>' +
+      '<div class="desc">Every row is a SKU launched into a new city. Units, Revenue, Price/can and CM/can (est.) are computed live from your real sales/ad-spend data since the launch’s start date — not hand-entered. COGS and ad-spend per can are exact (both are tracked per SKU×city); the platform-fee component of CM/can is an estimate using the company-wide average fee-per-can for that window, because Blinkit’s settlement export only reports storage/shipping/commission at the whole-account level, not broken out by SKU or city.</div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
+        '<span class="pill pill-ok">Active: ' + summary.active + '</span>' +
+        '<span class="pill pill-info">Planned: ' + summary.planned + '</span>' +
+        '<span class="pill pill-warn">Paused: ' + summary.paused + '</span>' +
+        '<span class="pill pill-info">Completed: ' + summary.completed + '</span>' +
+        '<span class="pill pill-err">Cancelled: ' + summary.cancelled + '</span>' +
+      '</div>' +
+      (rows.length ? (
+        '<table><thead><tr>' +
+        '<th>SKU</th><th>City</th><th>Start</th><th>End</th><th>Status</th>' +
+        '<th class="num">Days live</th><th class="num">Units sold</th><th class="num">Avg/day</th>' +
+        '<th class="num">vs target</th><th class="num">Revenue</th><th class="num">Price/can</th><th class="num">CM/can (est.)</th>' +
+        '<th></th><th></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function(r) {
+          var cls = statusPill[r.status] || 'pill-info';
+          var p = r.perf;
+          var vsTarget = (p && p.vs_target_pct != null)
+            ? '<span class="pill ' + (p.vs_target_pct >= 90 ? 'pill-ok' : (p.vs_target_pct >= 50 ? 'pill-warn' : 'pill-err')) + '">' + p.vs_target_pct + '%</span>'
+            : '<span class="muted" title="No target_daily_units set on this row">—</span>';
+          var cmTxt = (p && p.cm_per_unit_est != null)
+            ? '<span class="' + (p.cm_per_unit_est >= 0 ? '' : 'neg') + '" style="' + (p.cm_per_unit_est >= 0 ? 'color:var(--nh-green,#1E8449)' : 'color:var(--nh-red,#BF1A2F)') + '">' + inr(p.cm_per_unit_est) + '</span>'
+            : '<span class="muted">—</span>';
+          return '<tr data-id="' + escapeHtml(r.expansion_id) + '">' +
+            '<td>' + escapeHtml(r.sku) + '</td>' +
+            '<td>' + escapeHtml(r.city) + '</td>' +
+            '<td>' + escapeHtml(r.start_date||'') + '</td>' +
+            '<td>' + escapeHtml(r.end_date||'') + '</td>' +
+            '<td><span class="pill ' + cls + '">' + escapeHtml(r.status) + '</span></td>' +
+            (r.not_launched_yet
+              ? '<td class="num" colspan="7" style="text-align:center;color:var(--nh-gray-text)">Not started yet</td>'
+              : (
+                '<td class="num">' + num(p.days_elapsed) + '</td>' +
+                '<td class="num">' + num(p.units) + '</td>' +
+                '<td class="num">' + num(p.avg_daily_units) + (p.target_daily_units ? ' <span class="muted" style="font-size:11px">/ ' + p.target_daily_units + '</span>' : '') + '</td>' +
+                '<td class="num">' + vsTarget + '</td>' +
+                '<td class="num">' + money(p.revenue) + '</td>' +
+                '<td class="num">' + money(p.price_per_unit) + '</td>' +
+                '<td class="num">' + cmTxt + '</td>'
+              )) +
+            '<td><a href="#" class="exp-edit">edit</a></td>' +
+            '<td><a href="#" class="exp-delete" style="color:var(--nh-red,#BF1A2F)">delete</a></td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>'
+      ) : '<div class="muted">No expansion rows yet. Click + New expansion to log one.</div>') +
+      '</div>';
+
+    $('new-exp-btn').addEventListener('click', function() {
+      showModal(expansionFormHtml(null));
+      wireExpansionForm(null, el);
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('.exp-edit'), function(a) {
+      a.addEventListener('click', function(e) {
+        e.preventDefault();
+        var id = a.closest('tr').getAttribute('data-id');
+        var row = rows.filter(function(x) { return x.expansion_id === id; })[0];
+        if (!row) return;
+        showModal(expansionFormHtml(row));
+        wireExpansionForm(row, el);
+      });
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('.exp-delete'), function(a) {
+      a.addEventListener('click', function(e) {
+        e.preventDefault();
+        var id = a.closest('tr').getAttribute('data-id');
+        var row = rows.filter(function(x) { return x.expansion_id === id; })[0];
+        if (!row) return;
+        if (!confirm('Delete expansion "' + row.sku + ' → ' + row.city + '" (' + id + ')? This cannot be undone.')) return;
+        a.textContent = 'deleting…';
+        api('deleteExpansion', { expansion_id: id }, 'POST').then(function() {
+          renderExpansion(el);
+        }).catch(function(err) {
+          a.textContent = 'delete';
+          alert('Failed: ' + err.message);
+        });
+      });
+    });
+  });
+}
+
+function expansionFormHtml(r) {
+  r = r || {};
+  var isEdit = !!r.expansion_id;
+  function val(k, d) { return escapeHtml(r[k] != null ? r[k] : (d || '')); }
+  var skus = (state.boot && state.boot.skus) || [];
+  var cities = (state.boot && state.boot.cities) || [];
+  return '<h3>' + (isEdit ? 'Expansion ' + escapeHtml(r.expansion_id) : 'New expansion') + '</h3>' +
+    '<label>SKU</label>' +
+    '<select id="e-sku" ' + (isEdit ? 'disabled' : '') + '>' +
+      skus.map(function(s) { return '<option value="' + escapeHtml(s.sku_id) + '"' + (r.sku_id === s.sku_id ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>'; }).join('') +
+    '</select>' +
+    '<label>City</label>' +
+    '<select id="e-city" ' + (isEdit ? 'disabled' : '') + '>' +
+      cities.map(function(c) { return '<option value="' + escapeHtml(c.city_id) + '"' + (r.city_id === c.city_id ? ' selected' : '') + '>' + escapeHtml(c.name) + '</option>'; }).join('') +
+    '</select>' +
+    '<label>Start date</label>' +
+    '<input id="e-start" type="date" value="' + val('start_date') + '" ' + (isEdit ? 'disabled' : '') + '>' +
+    '<label>Target end date (optional)</label>' +
+    '<input id="e-end" type="date" value="' + val('end_date') + '">' +
+    '<label>Target level (your own milestone label, e.g. trial / level2 / level3)</label>' +
+    '<input id="e-level" value="' + val('target_level') + '" placeholder="trial">' +
+    '<label>Target cans/day (optional — lets the table show "vs target")</label>' +
+    '<input id="e-target-units" type="number" value="' + val('target_daily_units') + '" placeholder="e.g. 15">' +
+    '<label>Status</label>' +
+    '<select id="e-status">' +
+      ['planned','active','paused','completed','cancelled'].map(function(s) {
+        return '<option' + (r.status === s ? ' selected' : '') + '>' + s + '</option>';
+      }).join('') +
+    '</select>' +
+    '<label>Notes</label>' +
+    '<textarea id="e-notes" style="min-height:70px">' + val('notes') + '</textarea>' +
+    '<div class="actions">' +
+      '<button class="secondary" onclick="hideModal()">Cancel</button>' +
+      '<button id="e-save">' + (isEdit ? 'Update' : 'Create') + '</button>' +
+    '</div>';
+}
+
+function wireExpansionForm(existing, parentEl) {
+  $('e-save').addEventListener('click', function() {
+    var btn = $('e-save');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    if (existing && existing.expansion_id) {
+      api('updateExpansion', {
+        expansion_id: existing.expansion_id,
+        status: $('e-status').value,
+        end_date: $('e-end').value,
+        target_level: $('e-level').value,
+        target_daily_units: $('e-target-units').value,
+        notes: $('e-notes').value,
+      }, 'POST').then(function() {
+        hideModal(); renderExpansion(parentEl);
+      }).catch(function(e) {
+        btn.disabled = false; btn.textContent = 'Update'; alert('Failed: ' + e.message);
+      });
+    } else {
+      api('createExpansion', {
+        sku_id: $('e-sku').value,
+        city_id: $('e-city').value,
+        start_date: $('e-start').value,
+        end_date: $('e-end').value,
+        target_level: $('e-level').value,
+        target_daily_units: $('e-target-units').value,
+        status: $('e-status').value,
+        notes: $('e-notes').value,
+      }, 'POST').then(function() {
+        hideModal(); renderExpansion(parentEl);
+      }).catch(function(e) {
+        btn.disabled = false; btn.textContent = 'Create'; alert('Failed: ' + e.message);
+      });
+    }
   });
 }
 
@@ -1265,19 +1426,34 @@ function renderBudget(el) {
 
 function renderForecast(el) {
   setLoading(el);
-  return api('forecast').then(function(rows) {
+  return api('forecast').then(function(d) {
+    if (d.missing_tab) {
+      el.innerHTML = '<div class="panel"><h2>Forecast vs Actual</h2>' +
+        '<div class="alert medium"><div class="sev">Setup</div><div class="msg"><b>monthly_forecast tab not found</b>Open your Google Sheet, then Night Hawk OS menu &rarr; "Create missing tabs (upgrade)".</div></div></div>';
+      return;
+    }
+    var rows = d.rows || [];
     var html = rows.map(function(r) {
-      var f = +r.forecast_value || 0;
-      var a = r.actual_value == null || r.actual_value === '' ? null : +r.actual_value;
-      var v = a == null ? '\u2014' : (f ? Math.round((a-f)/f*100)+'%' : '\u2014');
+      var f = r.forecast_value || 0;
+      var a = r.actual_value;
+      var vTxt = '<span class="muted">\u2014</span>';
+      if (a != null && f) {
+        var cls = r.variance_pct >= 0 ? 'pill-ok' : 'pill-err';
+        vTxt = '<span class="pill ' + cls + '">' + (r.variance_pct >= 0 ? '+' : '') + r.variance_pct + '%</span>';
+      }
+      var actualTxt;
+      if (!r.is_known_metric) actualTxt = '<span class="muted" title="No auto-actual rule for this metric name">\u2014 (unrecognised metric)</span>';
+      else if (a == null) actualTxt = '<span class="muted">' + (r.is_future ? 'not due yet' : 'no data') + '</span>';
+      else actualTxt = a.toLocaleString('en-IN') + (r.in_progress ? ' <span class="muted" style="font-size:11px">(month in progress)</span>' : '');
       return '<tr><td>' + escapeHtml(r.month) + '</td><td>' + escapeHtml(r.metric) + '</td>' +
              '<td class="num">' + f.toLocaleString('en-IN') + '</td>' +
-             '<td class="num">' + (a == null ? '\u2014' : a.toLocaleString('en-IN')) + '</td>' +
-             '<td class="num">' + v + '</td>' +
+             '<td class="num">' + actualTxt + '</td>' +
+             '<td class="num">' + vTxt + '</td>' +
              '<td>' + escapeHtml(r.delta_note||'') + '</td></tr>';
     }).join('');
     el.innerHTML = '<div class="panel"><h2>Forecast vs Actual</h2>' +
-      '<table><thead><tr><th>Month</th><th>Metric</th><th class="num">Forecast</th><th class="num">Actual</th><th class="num">Variance</th><th>Note</th></tr></thead><tbody>' + html + '</tbody></table></div>';
+      '<div class="desc">Forecast is still whatever target you set for the month (edit <code>monthly_forecast</code> directly in the Sheet to add or change a target). "Actual" is no longer typed in by hand \u2014 it\'s computed live from your real revenue/units/ad-spend/fee data for that calendar month, matched by the metric name (revenue, units, ad_cost, storage_fee, shipping_fee, commission_fee, tds, lost_damaged). A metric name the app doesn\'t recognise, or a month that hasn\'t happened yet, shows as \u2014 instead of a guess.</div>' +
+      '<table><thead><tr><th>Month</th><th>Metric</th><th class="num">Forecast</th><th class="num">Actual (auto)</th><th class="num">Variance</th><th>Note</th></tr></thead><tbody>' + html + '</tbody></table></div>';
   });
 }
 
@@ -2103,17 +2279,25 @@ function renderCash(el) {
     var bal = d.balance;
     var burn = d.avg_net_burn;
     var runway = d.runway_months;
-    var burnCls = burn <= 0 ? 'ok' : 'warn';
+    var isBurning = burn > 0;
+    var burnCls = isBurning ? 'warn' : 'ok';
+    var burnLabel = isBurning ? 'Avg monthly burn' : 'Avg monthly net gain';
+    var burnValue = isBurning ? inr(burn) : inr(-burn);
+    var burnSub = (isBurning ? 'spending more than you receive, ' : 'receiving more than you pay out, ') + 'last ' + d.lookback_months + ' mo';
     var runwayCls = (runway === null) ? 'ok' : (runway < 6 ? 'err' : (runway < 12 ? 'warn' : 'ok'));
     var runwayValue = (runway === null) ? '\u221E' : (runway + ' mo');
-    var runwaySub = (runway === null) ? 'Net-positive or near break-even' : 'At current ' + d.lookback_months + '-mo avg burn';
+    var runwaySub = (runway === null) ? 'Not burning \u2014 no countdown applies' : 'Months left at current burn rate';
 
-    var html = '<div class="kpi-grid">' +
-      '<div class="kpi"><div class="label">Cash balance</div><div class="value">' + inr(bal) + '</div><div class="sub">as of latest entry</div></div>' +
-      '<div class="kpi ' + burnCls + '"><div class="label">Avg monthly burn</div><div class="value">' + inr(burn) + '</div><div class="sub">last ' + d.lookback_months + ' months</div></div>' +
-      '<div class="kpi"><div class="label">Avg inflow</div><div class="value">' + inr(d.avg_monthly_inflow) + '</div><div class="sub">per month</div></div>' +
-      '<div class="kpi"><div class="label">Avg outflow</div><div class="value">' + inr(d.avg_monthly_outflow) + '</div><div class="sub">per month</div></div>' +
-      '<div class="kpi ' + runwayCls + '"><div class="label">Runway</div><div class="value">' + runwayValue + '</div><div class="sub">' + runwaySub + '</div></div>' +
+    var html =
+      '<div class="panel" style="margin-bottom:14px">' +
+      '<div class="desc" style="margin:0"><b>Scope:</b> every number on this page comes only from Blinkit settlement credit/debit notes recorded in the <code>cash_ledger</code> tab. It does not include salaries, rent, founder capital, or any other real company expense unless you log it yourself with "+ Add entry" below. Treat "Runway" here as <i>"is Blinkit\u2019s payout position net-positive"</i>, not total company survival time \u2014 for that, add your real expenses as outflow entries too.</div>' +
+      '</div>' +
+      '<div class="kpi-grid">' +
+      '<div class="kpi"><div class="label">Cash balance</div><div class="value">' + inr(bal) + '</div><div class="sub">running total of every ledger entry below</div></div>' +
+      '<div class="kpi ' + burnCls + '"><div class="label">' + burnLabel + '</div><div class="value">' + burnValue + '</div><div class="sub">' + burnSub + '</div></div>' +
+      '<div class="kpi"><div class="label">Avg inflow</div><div class="value">' + inr(d.avg_monthly_inflow) + '</div><div class="sub">per month, Blinkit settlements only</div></div>' +
+      '<div class="kpi"><div class="label">Avg outflow</div><div class="value">' + inr(d.avg_monthly_outflow) + '</div><div class="sub">per month, Blinkit settlements only</div></div>' +
+      '<div class="kpi ' + runwayCls + '"><div class="label">Runway</div><div class="value">' + runwayValue + '</div><div class="sub">' + runwaySub + ' \u00B7 balance \u00F7 burn</div></div>' +
       (d.projected_breakeven_month ?
         '<div class="kpi ok"><div class="label">Projected break-even</div><div class="value">' + escapeHtml(d.projected_breakeven_month) + '</div><div class="sub">if burn-reduction trend continues</div></div>'
         : '') +
