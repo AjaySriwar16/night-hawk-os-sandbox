@@ -2221,7 +2221,7 @@ function renderDecisions(el) {
       '</div>' +
       (rows.length ? (
         '<table><thead><tr>' +
-        '<th>ID</th><th>Created</th><th>Title</th><th>Category</th><th>Owner</th><th>Status</th><th>Outcome</th><th></th>' +
+        '<th>ID</th><th>Created</th><th>Title</th><th>Category</th><th>Owner</th><th>Status</th><th>Outcome</th><th></th><th></th>' +
         '</tr></thead><tbody>' +
         rows.map(function(r) {
           var cls = statusPill[r.status] || 'pill-info';
@@ -2234,6 +2234,7 @@ function renderDecisions(el) {
             '<td><span class="pill ' + cls + '">' + escapeHtml(r.status) + '</span></td>' +
             '<td style="max-width:240px;font-size:12px">' + escapeHtml((r.outcome || '').slice(0, 140)) + (r.outcome && r.outcome.length > 140 ? '\u2026' : '') + '</td>' +
             '<td><a href="#" class="dec-view">view</a></td>' +
+            '<td><a href="#" class="dec-delete" style="color:var(--nh-red,#BF1A2F)">delete</a></td>' +
             '</tr>';
         }).join('') +
         '</tbody></table>'
@@ -2252,6 +2253,22 @@ function renderDecisions(el) {
         if (!row) return;
         showModal(decisionFormHtml(row));
         wireDecisionForm(row, el);
+      });
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('.dec-delete'), function(a) {
+      a.addEventListener('click', function(e) {
+        e.preventDefault();
+        var id = a.closest('tr').getAttribute('data-id');
+        var row = rows.filter(function(x) { return x.decision_id === id; })[0];
+        if (!row) return;
+        if (!confirm('Delete decision "' + row.title + '" (' + id + ')? This cannot be undone.')) return;
+        a.textContent = 'deleting…';
+        api('deleteDecision', { decision_id: id }, 'POST').then(function() {
+          renderDecisions(el);
+        }).catch(function(err) {
+          a.textContent = 'delete';
+          alert('Failed: ' + err.message);
+        });
       });
     });
   });
