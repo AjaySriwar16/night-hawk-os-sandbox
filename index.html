@@ -1228,9 +1228,9 @@ function renderExpansion(el) {
       return;
     }
     var rows = d.rows || [];
-    var summary = { planned: 0, active: 0, paused: 0, completed: 0, cancelled: 0 };
+    var summary = { planned: 0, gated: 0, active: 0, paused: 0, completed: 0, cancelled: 0 };
     rows.forEach(function(r) { if (summary[r.status] !== undefined) summary[r.status]++; });
-    var statusPill = { planned: 'pill-info', active: 'pill-ok', paused: 'pill-warn', completed: 'pill-info', cancelled: 'pill-err' };
+    var statusPill = { planned: 'pill-info', gated: 'pill-warn', active: 'pill-ok', paused: 'pill-warn', completed: 'pill-info', cancelled: 'pill-err' };
 
     function num(n) { return n == null ? '<span class="muted">—</span>' : n.toLocaleString('en-IN'); }
     function money(n) { return n == null ? '<span class="muted">—</span>' : inr(n); }
@@ -1245,6 +1245,7 @@ function renderExpansion(el) {
       '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
         '<span class="pill pill-ok">Active: ' + summary.active + '</span>' +
         '<span class="pill pill-info">Planned: ' + summary.planned + '</span>' +
+        '<span class="pill pill-warn" title="Blocked behind a Blinkit level requirement — not yet eligible to launch">Gated: ' + summary.gated + '</span>' +
         '<span class="pill pill-warn">Paused: ' + summary.paused + '</span>' +
         '<span class="pill pill-info">Completed: ' + summary.completed + '</span>' +
         '<span class="pill pill-err">Cancelled: ' + summary.cancelled + '</span>' +
@@ -1272,7 +1273,11 @@ function renderExpansion(el) {
             '<td>' + escapeHtml(r.end_date||'') + '</td>' +
             '<td><span class="pill ' + cls + '">' + escapeHtml(r.status) + '</span></td>' +
             (r.not_launched_yet
-              ? '<td class="num" colspan="7" style="text-align:center;color:var(--nh-gray-text)">Not started yet</td>'
+              ? '<td class="num" colspan="7" style="text-align:center;color:var(--nh-gray-text)">' +
+                (r.status === 'gated'
+                  ? 'Gated' + (r.target_level ? ' — waiting on ' + escapeHtml(r.target_level) : '')
+                  : 'Not started yet') +
+                '</td>'
               : (
                 '<td class="num">' + num(p.days_elapsed) + '</td>' +
                 '<td class="num">' + num(p.units) + '</td>' +
@@ -1349,7 +1354,7 @@ function expansionFormHtml(r) {
     '<input id="e-target-units" type="number" value="' + val('target_daily_units') + '" placeholder="e.g. 15">' +
     '<label>Status</label>' +
     '<select id="e-status">' +
-      ['planned','active','paused','completed','cancelled'].map(function(s) {
+      ['planned','gated','active','paused','completed','cancelled'].map(function(s) {
         return '<option' + (r.status === s ? ' selected' : '') + '>' + s + '</option>';
       }).join('') +
     '</select>' +
