@@ -1463,9 +1463,17 @@ function forecastNotesBlock_(rows) {
     return '<div class="desc" style="margin-top:8px;font-style:italic">' + escapeHtml(n) + '</div>';
   }).join('');
 }
+var FC_METRIC_LABELS_ = {
+  revenue: 'Revenue', units: 'Units (cans)', ad_cost: 'Ad cost',
+  storage_fee: 'Storage fee', shipping_fee: 'Shipping fee', lost_damaged: 'Lost/damaged'
+};
+function forecastMetricLabel_(metric) {
+  var key = String(metric||'').trim().toLowerCase();
+  return FC_METRIC_LABELS_[key] || metric;
+}
 function forecastMonthTableRows_(rows) {
   return rows.map(function(r) {
-    return '<tr><td>' + escapeHtml(r.metric) + '</td>' +
+    return '<tr><td>' + escapeHtml(forecastMetricLabel_(r.metric)) + '</td>' +
            '<td class="num">' + (r.forecast_value||0).toLocaleString('en-IN') + '</td>' +
            '<td class="num">' + forecastActualTxt_(r) + '</td>' +
            '<td class="num">' + forecastVarianceTxt_(r) + '</td></tr>';
