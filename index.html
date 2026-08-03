@@ -1432,6 +1432,13 @@ function renderBudget(el) {
   $('bud-load').click();
 }
 
+var FC_MONTH_NAMES_ = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+function monthLabel_(ym) {
+  var parts = String(ym||'').split('-');
+  var y = parts[0], m = parseInt(parts[1], 10);
+  if (!y || !m || m < 1 || m > 12) return ym;
+  return FC_MONTH_NAMES_[m - 1] + ' ' + y;
+}
 function forecastVarianceTxt_(r) {
   var f = r.forecast_value || 0;
   var a = r.actual_value;
@@ -1443,54 +1450,80 @@ function forecastActualTxt_(r) {
   var a = r.actual_value;
   if (!r.is_known_metric) return '<span class="muted" title="No auto-actual rule for this metric name">\u2014 (unrecognised metric)</span>';
   if (a == null) return '<span class="muted">' + (r.is_future ? 'not due yet' : 'no data') + '</span>';
-  return a.toLocaleString('en-IN') + (r.in_progress ? ' <span class="muted" style="font-size:11px">(month in progress)</span>' : '');
+  return a.toLocaleString('en-IN') + (r.in_progress ? ' <span class="pill pill-info" style="font-size:11px;padding:2px 8px;margin-left:6px">month in progress</span>' : '');
+}
+function forecastNotesBlock_(rows) {
+  var notes = [];
+  (rows||[]).forEach(function(r) {
+    var n = (r.delta_note||'').trim();
+    if (n && notes.indexOf(n) === -1) notes.push(n);
+  });
+  if (!notes.length) return '';
+  return notes.map(function(n) {
+    return '<div class="desc" style="margin-top:8px;font-style:italic">' + escapeHtml(n) + '</div>';
+  }).join('');
 }
 function forecastMonthTableRows_(rows) {
   return rows.map(function(r) {
     return '<tr><td>' + escapeHtml(r.metric) + '</td>' +
            '<td class="num">' + (r.forecast_value||0).toLocaleString('en-IN') + '</td>' +
            '<td class="num">' + forecastActualTxt_(r) + '</td>' +
-           '<td class="num">' + forecastVarianceTxt_(r) + '</td>' +
-           '<td style="font-size:12px;color:var(--nh-gray-text)">' + escapeHtml(r.delta_note||'') + '</td></tr>';
+           '<td class="num">' + forecastVarianceTxt_(r) + '</td></tr>';
   }).join('');
 }
 function forecastMonthTable_(group) {
-  return '<h3 style="margin:14px 0 6px">' + escapeHtml(group.month) + '</h3>' +
-    '<table><thead><tr><th>Metric</th><th class="num">Forecast</th><th class="num">Actual</th><th class="num">Variance</th><th>Note</th></tr></thead><tbody>' +
-    forecastMonthTableRows_(group.rows) + '</tbody></table>';
+  return '<h3 style="margin:14px 0 6px">' + escapeHtml(monthLabel_(group.month)) + '</h3>' +
+    '<table><thead><tr><th>Metric</th><th class="num">Forecast</th><th class="num">Actual</th><th class="num">Variance</th></tr></thead><tbody>' +
+    forecastMonthTableRows_(group.rows) + '</tbody></table>' +
+    forecastNotesBlock_(group.rows);
 }
 
 function renderForecast(el) {
   setLoading(el);
-  return api('forecast', { from: state.filter.from, to: state.filter.to }).then(function(d) {
+  // Forecast has its own month filter (below), independent of the global topbar date range.
+  return api('forecast', { from: '2000-01', to: '2999-12' }).then(function(d) {
     if (d.missing_tab) {
       el.innerHTML = '<div class="panel"><h2>Forecast vs Actual</h2>' +
         '<div class="alert medium"><div class="sev">Setup</div><div class="msg"><b>monthly_forecast tab not found</b>Open your Google Sheet, then Night Hawk OS menu &rarr; "Create missing tabs (upgrade)".</div></div></div>';
       return;
     }
 
+    var curMonthKey = d.current ? d.current.month : (new Date()).toISOString().slice(0,7);
+    var curMonthLabel = monthLabel_(curMonthKey);
+    var inProgress = !!(d.current && d.current.rows.some(function(r) { return r.in_progress; }));
+
     var currentHtml = d.current
-      ? '<table><thead><tr><th>Metric</th><th class="num">Forecast</th><th class="num">Actual (auto)</th><th class="num">Variance</th><th>Note</th></tr></thead><tbody>' +
-          forecastMonthTableRows_(d.current.rows) + '</tbody></table>'
-      : '<div class="muted">No forecast set for this month yet. Add rows to <code>monthly_forecast</code> for ' + escapeHtml((new Date()).toISOString().slice(0,7)) + '.</div>';
+      ? '<table><thead><tr><th>Metric</th><th class="num">Forecast</th><th class="num">Actual (auto)</th><th class="num">Variance</th></tr></thead><tbody>' +
+          forecastMonthTableRows_(d.current.rows) + '</tbody></table>' + forecastNotesBlock_(d.current.rows)
+      : '<div class="muted">No forecast set for this month yet. Add rows to <code>monthly_forecast</code> for ' + escapeHtml(curMonthKey) + '.</div>';
 
     var upcoming = d.upcoming || [];
-    var firstSix = upcoming.slice(0, 6);
-    var restSix = upcoming.slice(6, 12);
-    var upcomingHtml = firstSix.length
-      ? firstSix.map(forecastMonthTable_).join('')
+    var firstFive = upcoming.slice(0, 5);
+    var restMonths = upcoming.slice(5);
+    var upcomingHtml = firstFive.length
+      ? firstFive.map(forecastMonthTable_).join('')
       : '<div class="muted">No upcoming forecast targets set.</div>';
-    var restHtml = restSix.length ? restSix.map(forecastMonthTable_).join('') : '';
+    var restHtml = restMonths.length ? restMonths.map(forecastMonthTable_).join('') : '';
 
     var past = d.past || [];
+    var pastSortedDesc = past.slice().sort(function(a, b) { return a.month < b.month ? 1 : -1; });
+    var monthOptions = '<option value="__all">All past months</option>' +
+      pastSortedDesc.map(function(g) {
+        return '<option value="' + escapeHtml(g.month) + '">' + escapeHtml(monthLabel_(g.month)) + '</option>';
+      }).join('');
     var pastHtml = past.length
-      ? past.map(forecastMonthTable_).join('')
-      : '<div class="muted">No past forecast rows in the selected date range.</div>';
+      ? past.map(function(g) {
+          return '<div class="fc-past-month" data-month="' + escapeHtml(g.month) + '">' + forecastMonthTable_(g) + '</div>';
+        }).join('')
+      : '<div class="muted">No past forecast rows yet.</div>';
 
     el.innerHTML =
       '<div class="panel">' +
-        '<h2>This month \u2014 ' + escapeHtml(d.current ? d.current.month : (new Date()).toISOString().slice(0,7)) + '</h2>' +
-        '<div class="desc">"Actual" is computed live from your real revenue/units/ad-spend/fee data for the current calendar month, matched by metric name \u2014 it updates every day as the month goes on. Forecast stays fixed at whatever target you set.</div>' +
+        '<div style="font-size:38px;font-weight:800;color:var(--nh-navy);letter-spacing:-0.5px;line-height:1.15">' +
+          escapeHtml(curMonthLabel) +
+          (inProgress ? ' <span class="pill pill-info" style="font-size:13px;padding:5px 14px;vertical-align:middle;margin-left:8px">IN PROGRESS</span>' : '') +
+        '</div>' +
+        '<div class="desc" style="margin-top:6px">"Actual" is computed live from your real revenue/units/ad-spend/fee data for the current calendar month, matched by metric name \u2014 it updates every day as the month goes on. Forecast stays fixed at whatever target you set.</div>' +
         currentHtml +
       '</div>' +
       '<div class="panel">' +
@@ -1498,12 +1531,18 @@ function renderForecast(el) {
         '<div class="desc">Forward-looking targets, in order. Edit <code>monthly_forecast</code> in the Sheet to add or change a target for any month.</div>' +
         '<div id="fc-upcoming-first">' + upcomingHtml + '</div>' +
         '<div id="fc-upcoming-rest" class="hidden">' + restHtml + '</div>' +
-        (restSix.length ? '<button id="fc-show-more" style="margin-top:10px;padding:7px 14px;border:1px solid var(--nh-gray-line);background:#fff;color:var(--nh-navy);border-radius:6px;cursor:pointer">Show next ' + restSix.length + ' months</button>' : '') +
+        (restMonths.length ? '<button id="fc-show-more" style="margin-top:10px;padding:7px 14px;border:1px solid var(--nh-gray-line);background:#fff;color:var(--nh-navy);border-radius:6px;cursor:pointer">Show next ' + restMonths.length + ' months</button>' : '') +
       '</div>' +
       '<div class="panel">' +
-        '<h2>Past months</h2>' +
-        '<div class="desc">Filtered by the date range at the top of the page (currently ' + escapeHtml(state.filter.from||'') + ' \u2192 ' + escapeHtml(state.filter.to||'') + '). Widen the range to see further back.</div>' +
-        pastHtml +
+        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">' +
+          '<h2 style="margin:0">Past months</h2>' +
+          '<div>' +
+            '<label style="font-size:12px;color:var(--nh-gray-text);margin-right:6px">Jump to month</label>' +
+            '<select id="fc-month-filter" style="padding:6px 10px;border:1px solid var(--nh-gray-line);border-radius:6px">' + monthOptions + '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div class="desc" style="margin-top:6px">Pick any month (with year) to view it on its own, or leave on "All past months" to see the full history.</div>' +
+        '<div id="fc-past-body">' + pastHtml + '</div>' +
       '</div>';
 
     var moreBtn = $('fc-show-more');
@@ -1511,6 +1550,16 @@ function renderForecast(el) {
       moreBtn.addEventListener('click', function() {
         $('fc-upcoming-rest').classList.remove('hidden');
         moreBtn.remove();
+      });
+    }
+
+    var monthFilterSel = $('fc-month-filter');
+    if (monthFilterSel) {
+      monthFilterSel.addEventListener('change', function() {
+        var v = monthFilterSel.value;
+        Array.prototype.forEach.call(document.querySelectorAll('.fc-past-month'), function(node) {
+          node.style.display = (v === '__all' || node.getAttribute('data-month') === v) ? '' : 'none';
+        });
       });
     }
   });
