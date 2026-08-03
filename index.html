@@ -1056,15 +1056,19 @@ function renderInventory(el) {
     // Reorder panel
     var reorderHtml = '';
     if (d.reorder && d.reorder.length) {
+      var anySuppressed = d.reorder.some(function(r) { return r.demand_suppressed; });
       var reorderRows = d.reorder.map(function(r) {
         var u = r.reorder.urgency;
         var pillCls = u === 'critical' ? 'pill-err' : (u === 'high' ? 'pill-warn' : 'pill-info');
+        var runTxt = r.daily_run + '/day' + (r.demand_suppressed
+          ? ' <span class="pill pill-warn" style="font-size:10px" title="' + escapeHtml(r.reorder.rationale) + '">using 15/30d trend</span>'
+          : '');
         return '<tr>' +
           '<td><span class="pill ' + pillCls + '">' + escapeHtml(u) + '</span></td>' +
           '<td>' + escapeHtml(r.sku) + '</td>' +
           '<td>' + escapeHtml(r.warehouse) + '</td>' +
           '<td class="num">' + r.sellable + '</td>' +
-          '<td class="num">' + r.daily_run + '/day</td>' +
+          '<td class="num">' + runTxt + '</td>' +
           '<td class="num">' + r.cover_days + 'd</td>' +
           '<td class="num"><b>' + r.reorder.recommended_qty + '</b></td>' +
           '<td>' + escapeHtml(r.reorder.reorder_by_date) + '</td>' +
@@ -1080,23 +1084,27 @@ function renderInventory(el) {
           ' <span class="pill pill-warn" style="margin-left:8px">' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + ' low</span>' +
           ' <span class="pill pill-warn">' + reorderWhCount + ' warehouse' + (reorderWhCount === 1 ? '' : 's') + '</span>' +
         '</h2>' +
-        '<div class="desc">These ' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + (reorderSkuCount === 1 ? ' is' : ' are') + ' running low, split across ' + reorderWhCount + ' warehouses — that\'s why the table below has ' + d.reorder.length + ' rows (one per SKU + warehouse pair). Target cover: ' + (state.boot.config.REORDER_TARGET_COVER_DAYS || 21) + 'd, lead time: ' + (state.boot.config.REORDER_LEAD_TIME_DAYS || 7) + 'd. Click "Log as issue" to hand off to ops.</div>' +
+        '<div class="desc">These ' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + (reorderSkuCount === 1 ? ' is' : ' are') + ' running low, split across ' + reorderWhCount + ' warehouses — that\'s why the table below has ' + d.reorder.length + ' rows (one per SKU + warehouse pair). Target cover: ' + (state.boot.config.REORDER_TARGET_COVER_DAYS || 21) + 'd, lead time: ' + (state.boot.config.REORDER_LEAD_TIME_DAYS || 7) + 'd. Click "Log as issue" to hand off to ops.' +
+          (anySuppressed ? ' Rows tagged "using 15/30d trend" ran low on stock recently, which depresses the raw 7-day sales number below true demand — those use the longer-window rate instead so the order quantity isn\'t artificially small.' : '') +
+        '</div>' +
         '<table><thead><tr><th>Urgency</th><th>SKU</th><th>Warehouse</th><th class="num">Sellable</th><th class="num">Daily run</th><th class="num">Cover</th><th class="num">Order qty</th><th>By date</th><th></th></tr></thead><tbody>' + reorderRows + '</tbody></table>' +
         '</div>';
     }
     var rowsHtml = d.rows.map(function(r) {
       var flag = r.cover_flag === 'critical' ? 'pill-err' : (r.cover_flag === 'warning' ? 'pill-warn' : 'pill-ok');
+      var runTxt = r.daily_run + (r.demand_suppressed ? ' <span class="pill pill-warn" style="font-size:10px" title="7-day sales look stockout-suppressed \u2014 using the 15/30-day trend instead">adj.</span>' : '');
       return '<tr><td>' + escapeHtml(r.warehouse) + '</td><td>' + escapeHtml(r.sku) + '</td>' +
              '<td class="num">' + r.sellable + '</td><td class="num">' + r.unsellable + '</td>' +
              '<td class="num">' + r.damaged + '</td><td class="num">' + r.lost + '</td>' +
-             '<td class="num">' + r.sold_7d + '</td><td class="num">' + r.sold_30d + '</td>' +
-             '<td class="num">' + r.daily_run + '</td>' +
+             '<td class="num">' + r.sold_7d + '</td><td class="num">' + r.sold_15d + '</td><td class="num">' + r.sold_30d + '</td>' +
+             '<td class="num">' + runTxt + '</td>' +
              '<td class="num">' + r.cover_days + '</td>' +
              '<td><span class="pill ' + flag + '">' + escapeHtml(r.cover_flag) + '</span></td></tr>';
     }).join('');
     el.innerHTML = reorderHtml +
       '<div class="panel"><h2>Latest snapshot \u2014 ' + escapeHtml(d.snapshot_date) + '</h2>' +
-      '<table><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Unsellable</th><th class="num">Damaged</th><th class="num">Lost</th><th class="num">7d sold</th><th class="num">30d sold</th><th class="num">Daily run</th><th class="num">Cover (d)</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+      '<div class="desc">Daily run = 7-day sold \u00f7 7 by default. When a warehouse ran low on stock recently (so the 7-day number likely undercounts real demand rather than reflecting a genuine drop), it switches to the 15/30-day trend instead and shows "adj." \u2014 hover it for why.</div>' +
+      '<table><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Unsellable</th><th class="num">Damaged</th><th class="num">Lost</th><th class="num">7d sold</th><th class="num">15d sold</th><th class="num">30d sold</th><th class="num">Daily run</th><th class="num">Cover (d)</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
     renderInventoryUploadPanel_(el);
 
     // Wire "Log as issue" buttons
@@ -1424,36 +1432,87 @@ function renderBudget(el) {
   $('bud-load').click();
 }
 
+function forecastVarianceTxt_(r) {
+  var f = r.forecast_value || 0;
+  var a = r.actual_value;
+  if (a == null || !f) return '<span class="muted">\u2014</span>';
+  var cls = r.variance_pct >= 0 ? 'pill-ok' : 'pill-err';
+  return '<span class="pill ' + cls + '">' + (r.variance_pct >= 0 ? '+' : '') + r.variance_pct + '%</span>';
+}
+function forecastActualTxt_(r) {
+  var a = r.actual_value;
+  if (!r.is_known_metric) return '<span class="muted" title="No auto-actual rule for this metric name">\u2014 (unrecognised metric)</span>';
+  if (a == null) return '<span class="muted">' + (r.is_future ? 'not due yet' : 'no data') + '</span>';
+  return a.toLocaleString('en-IN') + (r.in_progress ? ' <span class="muted" style="font-size:11px">(month in progress)</span>' : '');
+}
+function forecastMonthTableRows_(rows) {
+  return rows.map(function(r) {
+    return '<tr><td>' + escapeHtml(r.metric) + '</td>' +
+           '<td class="num">' + (r.forecast_value||0).toLocaleString('en-IN') + '</td>' +
+           '<td class="num">' + forecastActualTxt_(r) + '</td>' +
+           '<td class="num">' + forecastVarianceTxt_(r) + '</td>' +
+           '<td style="font-size:12px;color:var(--nh-gray-text)">' + escapeHtml(r.delta_note||'') + '</td></tr>';
+  }).join('');
+}
+function forecastMonthTable_(group) {
+  return '<h3 style="margin:14px 0 6px">' + escapeHtml(group.month) + '</h3>' +
+    '<table><thead><tr><th>Metric</th><th class="num">Forecast</th><th class="num">Actual</th><th class="num">Variance</th><th>Note</th></tr></thead><tbody>' +
+    forecastMonthTableRows_(group.rows) + '</tbody></table>';
+}
+
 function renderForecast(el) {
   setLoading(el);
-  return api('forecast').then(function(d) {
+  return api('forecast', { from: state.filter.from, to: state.filter.to }).then(function(d) {
     if (d.missing_tab) {
       el.innerHTML = '<div class="panel"><h2>Forecast vs Actual</h2>' +
         '<div class="alert medium"><div class="sev">Setup</div><div class="msg"><b>monthly_forecast tab not found</b>Open your Google Sheet, then Night Hawk OS menu &rarr; "Create missing tabs (upgrade)".</div></div></div>';
       return;
     }
-    var rows = d.rows || [];
-    var html = rows.map(function(r) {
-      var f = r.forecast_value || 0;
-      var a = r.actual_value;
-      var vTxt = '<span class="muted">\u2014</span>';
-      if (a != null && f) {
-        var cls = r.variance_pct >= 0 ? 'pill-ok' : 'pill-err';
-        vTxt = '<span class="pill ' + cls + '">' + (r.variance_pct >= 0 ? '+' : '') + r.variance_pct + '%</span>';
-      }
-      var actualTxt;
-      if (!r.is_known_metric) actualTxt = '<span class="muted" title="No auto-actual rule for this metric name">\u2014 (unrecognised metric)</span>';
-      else if (a == null) actualTxt = '<span class="muted">' + (r.is_future ? 'not due yet' : 'no data') + '</span>';
-      else actualTxt = a.toLocaleString('en-IN') + (r.in_progress ? ' <span class="muted" style="font-size:11px">(month in progress)</span>' : '');
-      return '<tr><td>' + escapeHtml(r.month) + '</td><td>' + escapeHtml(r.metric) + '</td>' +
-             '<td class="num">' + f.toLocaleString('en-IN') + '</td>' +
-             '<td class="num">' + actualTxt + '</td>' +
-             '<td class="num">' + vTxt + '</td>' +
-             '<td>' + escapeHtml(r.delta_note||'') + '</td></tr>';
-    }).join('');
-    el.innerHTML = '<div class="panel"><h2>Forecast vs Actual</h2>' +
-      '<div class="desc">Forecast is still whatever target you set for the month (edit <code>monthly_forecast</code> directly in the Sheet to add or change a target). "Actual" is no longer typed in by hand \u2014 it\'s computed live from your real revenue/units/ad-spend/fee data for that calendar month, matched by the metric name (revenue, units, ad_cost, storage_fee, shipping_fee, commission_fee, tds, lost_damaged). A metric name the app doesn\'t recognise, or a month that hasn\'t happened yet, shows as \u2014 instead of a guess.</div>' +
-      '<table><thead><tr><th>Month</th><th>Metric</th><th class="num">Forecast</th><th class="num">Actual (auto)</th><th class="num">Variance</th><th>Note</th></tr></thead><tbody>' + html + '</tbody></table></div>';
+
+    var currentHtml = d.current
+      ? '<table><thead><tr><th>Metric</th><th class="num">Forecast</th><th class="num">Actual (auto)</th><th class="num">Variance</th><th>Note</th></tr></thead><tbody>' +
+          forecastMonthTableRows_(d.current.rows) + '</tbody></table>'
+      : '<div class="muted">No forecast set for this month yet. Add rows to <code>monthly_forecast</code> for ' + escapeHtml((new Date()).toISOString().slice(0,7)) + '.</div>';
+
+    var upcoming = d.upcoming || [];
+    var firstSix = upcoming.slice(0, 6);
+    var restSix = upcoming.slice(6, 12);
+    var upcomingHtml = firstSix.length
+      ? firstSix.map(forecastMonthTable_).join('')
+      : '<div class="muted">No upcoming forecast targets set.</div>';
+    var restHtml = restSix.length ? restSix.map(forecastMonthTable_).join('') : '';
+
+    var past = d.past || [];
+    var pastHtml = past.length
+      ? past.map(forecastMonthTable_).join('')
+      : '<div class="muted">No past forecast rows in the selected date range.</div>';
+
+    el.innerHTML =
+      '<div class="panel">' +
+        '<h2>This month \u2014 ' + escapeHtml(d.current ? d.current.month : (new Date()).toISOString().slice(0,7)) + '</h2>' +
+        '<div class="desc">"Actual" is computed live from your real revenue/units/ad-spend/fee data for the current calendar month, matched by metric name \u2014 it updates every day as the month goes on. Forecast stays fixed at whatever target you set.</div>' +
+        currentHtml +
+      '</div>' +
+      '<div class="panel">' +
+        '<h2>Upcoming forecast</h2>' +
+        '<div class="desc">Forward-looking targets, in order. Edit <code>monthly_forecast</code> in the Sheet to add or change a target for any month.</div>' +
+        '<div id="fc-upcoming-first">' + upcomingHtml + '</div>' +
+        '<div id="fc-upcoming-rest" class="hidden">' + restHtml + '</div>' +
+        (restSix.length ? '<button id="fc-show-more" style="margin-top:10px;padding:7px 14px;border:1px solid var(--nh-gray-line);background:#fff;color:var(--nh-navy);border-radius:6px;cursor:pointer">Show next ' + restSix.length + ' months</button>' : '') +
+      '</div>' +
+      '<div class="panel">' +
+        '<h2>Past months</h2>' +
+        '<div class="desc">Filtered by the date range at the top of the page (currently ' + escapeHtml(state.filter.from||'') + ' \u2192 ' + escapeHtml(state.filter.to||'') + '). Widen the range to see further back.</div>' +
+        pastHtml +
+      '</div>';
+
+    var moreBtn = $('fc-show-more');
+    if (moreBtn) {
+      moreBtn.addEventListener('click', function() {
+        $('fc-upcoming-rest').classList.remove('hidden');
+        moreBtn.remove();
+      });
+    }
   });
 }
 
