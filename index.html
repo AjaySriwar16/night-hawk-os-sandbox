@@ -1165,9 +1165,54 @@ function renderComplaints(el) {
   });
 }
 
+function presenceLevelPill_(level) {
+  var key = String(level || '').trim().toLowerCase();
+  var cls = { trial: 'pill-warn', l1: 'pill-warn', l2: 'pill-info', l3: 'pill-ok', l4: 'pill-ok' }[key] || 'pill-info';
+  var label = { trial: 'Trial', l1: 'Level 1', l2: 'Level 2', l3: 'Level 3', l4: 'Level 4' }[key] || (level || '—');
+  return '<span class="pill ' + cls + '">' + escapeHtml(label) + '</span>';
+}
+function renderListingHealthHtml_(presence) {
+  if (presence.missing_tab) {
+    return '<div class="panel"><h2>Listing health (Blinkit auto-promotion)</h2>' +
+      '<div class="muted">No data yet — upload Blinkit\'s "seller assortment/serviceability" export (Performance → Product Expansion) via Data Import Center to populate this.</div></div>';
+  }
+  var bySku = presence.by_sku || [];
+  if (!bySku.length) {
+    return '<div class="panel"><h2>Listing health (Blinkit auto-promotion)</h2>' +
+      '<div class="muted">Tab exists but has no rows yet — upload Blinkit\'s "seller assortment/serviceability" export via Data Import Center.</div></div>';
+  }
+  var rowsHtml = bySku.map(function(s) {
+    var unitsTxt = s.avg_units_sold_per_store + (s.avg_target_units_per_store ? ' <span class="muted" style="font-size:11px">/ target ' + s.avg_target_units_per_store + '</span>' : '');
+    var unitsShort = s.avg_target_units_per_store && s.avg_units_sold_per_store < s.avg_target_units_per_store;
+    var availCls = s.availability_pct >= 70 ? 'pill-ok' : (s.availability_pct >= 40 ? 'pill-warn' : 'pill-err');
+    var remarksHtml = (s.top_remarks || []).map(function(r) {
+      return '<div style="font-size:12px;margin-top:2px">' + r.count + '× <span class="muted">' + escapeHtml(r.remark) + '</span></div>';
+    }).join('');
+    return '<tr>' +
+      '<td>' + escapeHtml(s.sku_name) + '</td>' +
+      '<td>' + presenceLevelPill_(s.present_level) + (s.level_store_range ? ' <span class="muted" style="font-size:11px">' + escapeHtml(s.level_store_range) + '</span>' : '') + '</td>' +
+      '<td class="num"><span class="' + (unitsShort ? '' : '') + '" style="' + (unitsShort ? 'color:var(--nh-red,#BF1A2F)' : '') + '">' + unitsTxt + '</span></td>' +
+      '<td class="num"><span class="pill ' + availCls + '">' + s.availability_pct + '%</span></td>' +
+      '<td class="num">' + s.complaint_pct + '%</td>' +
+      '<td class="num">' + s.city_count + '</td>' +
+      '<td class="num">' + s.darkstore_count + '</td>' +
+      '<td>' + (s.blocked_count ? '<span class="pill pill-warn">' + s.blocked_count + ' blocked</span>' + remarksHtml : '<span class="muted">—</span>') + '</td>' +
+      '</tr>';
+  }).join('');
+  return '<div class="panel"><h2>Listing health (Blinkit auto-promotion)</h2>' +
+    '<div class="desc">Blinkit auto-promotes each SKU through its own stages — Trial (10 stores) → Level 1 (20-35) → Level 2 (50-75) → Level 3 (200-300) → Level 4 (500+) — based on that SKU\'s own average sales per store, complaint rate, and availability %, each against Blinkit\'s own target. "Avg units/store" and "target" below are Blinkit\'s own promotion inputs, not a revenue figure — use daily_sales/Dashboard for real revenue. Data from the seller assortment/serviceability export (Data Import Center).</div>' +
+    '<table><thead><tr><th>SKU</th><th>Current level</th><th class="num">Avg units/store</th><th class="num">Availability</th><th class="num">Complaint %</th><th class="num">Cities</th><th class="num">Darkstores</th><th>Blocked listings</th></tr></thead><tbody>' +
+    rowsHtml + '</tbody></table></div>';
+}
+
 function renderExpansion(el) {
   setLoading(el);
-  return api('expansion').then(function(d) {
+  return Promise.all([
+    api('expansion'),
+    api('presenceSummary').catch(function() { return { missing_tab: true, by_sku: [] }; }),
+  ]).then(function(results) {
+    var d = results[0];
+    var presence = results[1];
     if (d.missing_tab) {
       el.innerHTML = '<div class="panel"><h2>Expansion &amp; Experiments</h2>' +
         '<div class="alert medium"><div class="sev">Setup</div><div class="msg"><b>expansion_plan tab not found</b>Open your Google Sheet, then Night Hawk OS menu &rarr; "Create missing tabs (upgrade)".</div></div></div>';
@@ -1234,7 +1279,8 @@ function renderExpansion(el) {
         }).join('') +
         '</tbody></table>'
       ) : '<div class="muted">No expansion rows yet. Click + New expansion to log one.</div>') +
-      '</div>';
+      '</div>' +
+      renderListingHealthHtml_(presence);
 
     $('new-exp-btn').addEventListener('click', function() {
       showModal(expansionFormHtml(null));
@@ -3229,6 +3275,22 @@ function detectImportTarget_(headerCells) {
 // output, and never throws — a bad sheet inside one file is caught and
 // logged per-sheet, a bad file is caught and logged per-file, and
 // everything else keeps processing.
+// Mirrors isRawBlinkitPresenceReport_ in the backend exactly — detects
+// Blinkit's own seller assortment/serviceability export (Present Level,
+// per-darkstore Available flag + remark) by header signature, since a
+// standalone CSV upload gets sheet name "Sheet1" and can't be recognised
+// by name the way a real SOA workbook's named sheets are.
+function isBlinkitPresenceHeaderClient_(headerRow) {
+  var norm = (headerRow || []).map(soaNormHeader_);
+  var has = function(k) { return norm.indexOf(k) !== -1; };
+  return has('presentlevel') && has('darkstorename') && has('adjustedunitssoldperdarkstore');
+}
+function soaPresenceRowsToCsv_(header, rows) {
+  var lines = [header.map(soaCsvField_).join(',')];
+  rows.forEach(function(r) { lines.push(r.map(soaCsvField_).join(',')); });
+  return lines.join('\n');
+}
+
 function soaAggregateFiles_(files) {
   var dailyFees = {};
   var dailyAdSpend = {};
@@ -3237,6 +3299,7 @@ function soaAggregateFiles_(files) {
   var salesRows = []; // raw rows shaped like Blinkit's native Sales Report export — see soaExtractOrders_
   var payoutBreakupTotals = null;
   var inventoryRows = []; // one object per warehouse x item row — see soaExtractStockOnHand_
+  var presenceHeader = null; var presenceRows = []; // Blinkit's own seller assortment/serviceability export, passed through verbatim (server does the SKU/city resolution) — see isBlinkitPresenceHeaderClient_
   var fileReport = [];
   // Sheets that don't match a known Blinkit SOA sheet name still get a
   // second chance here: if their header row matches one of our OWN tab
@@ -3259,6 +3322,18 @@ function soaAggregateFiles_(files) {
           try {
             var plainRows = soaSheetRows_(wb.Sheets[sheetName]);
             var plainHeader = plainRows[0];
+            if (plainHeader && isBlinkitPresenceHeaderClient_(plainHeader)) {
+              if (!presenceHeader) presenceHeader = plainHeader;
+              var addedPresenceRows = 0;
+              plainRows.slice(1).forEach(function(r) {
+                if (r && r.some(function(c) { return c !== '' && c != null; })) {
+                  presenceRows.push(r);
+                  addedPresenceRows++;
+                }
+              });
+              detected.push({ sheet: sheetName, type: 'blinkit_presence', rows: addedPresenceRows });
+              return;
+            }
             var plainTarget = plainHeader ? detectImportTarget_(plainHeader) : null;
             if (plainTarget) {
               if (!plainImports[plainTarget]) plainImports[plainTarget] = { header: plainHeader, rows: [] };
@@ -3307,7 +3382,7 @@ function soaAggregateFiles_(files) {
     }
   });
 
-  return { dailyFees: dailyFees, dailyAdSpend: dailyAdSpend, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, inventoryRows: inventoryRows, fileReport: fileReport, plainImports: plainImports };
+  return { dailyFees: dailyFees, dailyAdSpend: dailyAdSpend, unassigned: unassigned, cashLedger: cashLedger, salesRows: salesRows, payoutBreakupTotals: payoutBreakupTotals, inventoryRows: inventoryRows, fileReport: fileReport, plainImports: plainImports, presenceHeader: presenceHeader, presenceRows: presenceRows };
 }
 
 // Converts the plainImports accumulator from soaAggregateFiles_ into one
@@ -3388,7 +3463,7 @@ function Utilities_yyyymm_() { var d = new Date(); return d.getFullYear() + Stri
 function renderImport(el) {
   el.innerHTML =
     '<div class="panel"><h2>Import data</h2>' +
-    '<div class="desc">Upload whatever Blinkit gave you — a full monthly SOA/payout folder (Payout Breakup, Forward Orders, Storage Charges, etc), a standalone <b>Sales Summary</b> export (Blinkit seller dashboard → Sales Performance → Reports) to refresh sales numbers only, or one of this app\'s own CSVs. Everything is read in your browser and routed to the right place automatically by matching sheet names and column headers — there\'s nothing to pick by hand. Re-uploading a month always corrects it in place rather than creating duplicates.</div>' +
+    '<div class="desc">Upload whatever Blinkit gave you — a full monthly SOA/payout folder (Payout Breakup, Forward Orders, Storage Charges, etc), a standalone <b>Sales Summary</b> export (Blinkit seller dashboard → Sales Performance → Reports) to refresh sales numbers only, a <b>seller assortment/serviceability</b> export (Performance → Product Expansion) to refresh per-SKU listing health on the Expansion tab, or one of this app\'s own CSVs. Everything is read in your browser and routed to the right place automatically by matching sheet names and column headers — there\'s nothing to pick by hand. Re-uploading a month always corrects it in place rather than creating duplicates.</div>' +
 
 
     '<div style="display:flex;gap:0;border-bottom:1px solid var(--nh-gray-line);margin-bottom:14px">' +
@@ -3550,10 +3625,12 @@ function renderImport(el) {
     var salesCsv = result.salesRows.length ? soaSalesRowsToCsv_(result.salesRows) : '';
     var plainCsvs = soaPlainImportsToCsvs_(result.plainImports || {});
     var inv = soaInventoryRowsToCsv_(result.inventoryRows || [], 'blinkit-stock-on-hand');
+    var presenceCsv = (result.presenceRows && result.presenceRows.length) ? soaPresenceRowsToCsv_(result.presenceHeader, result.presenceRows) : '';
     soaLastResult = { feesCsv: fees.csv, feesRows: fees.rowCount, adsCsv: ads.csv, adsRows: ads.rowCount,
       cashCsv: cash.csv, cashRows: cash.rowCount,
       salesCsv: salesCsv, salesRowCount: result.salesRows.length, plainCsvs: plainCsvs,
-      invCsv: inv.csv, invRows: inv.rowCount };
+      invCsv: inv.csv, invRows: inv.rowCount,
+      presenceCsv: presenceCsv, presenceRowCount: (result.presenceRows || []).length };
 
     // Units / gross bill amount straight from the order-line rows, shown
     // up front so it can be checked directly against a manual sum of the
@@ -3613,12 +3690,13 @@ function renderImport(el) {
     var plainSummary = plainTargets.length
       ? ', plus ' + plainTargets.map(function(t) { return '<b>' + plainCsvs[t].rowCount + ' row(s)</b> for <code class="inline">' + t + '</code>'; }).join(', ')
       : '';
-    var importDisabled = fees.rowCount === 0 && ads.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length && inv.rowCount === 0;
+    var importDisabled = fees.rowCount === 0 && ads.rowCount === 0 && result.salesRows.length === 0 && !plainTargets.length && inv.rowCount === 0 && !soaLastResult.presenceRowCount;
     var resultHtml = '<div class="alert ' + (errorCount ? 'medium' : 'low') + '"><div class="sev">Processed</div><div class="msg">' +
       '<b>' + fees.rowCount + ' day(s) of daily_fees</b> ready' + (cash.rowCount ? ', plus <b>' + cash.rowCount + ' cash_ledger</b> entr' + (cash.rowCount===1?'y':'ies') : '') +
       (ads.rowCount ? ', plus <b>' + ads.rowCount + ' day(s) of daily_ad_spend</b> (' + inr(Object.values(result.dailyAdSpend||{}).reduce(function(s,v){return s+v;},0)) + ' total)' : '') +
       (result.salesRows.length ? ', plus <b>' + result.salesRows.length + ' order line(s)</b> for daily_sales' : '') +
       (inv.rowCount ? ', plus <b>' + inv.rowCount + ' warehouse/SKU row(s)</b> for inventory_snapshots' : '') +
+      (soaLastResult.presenceRowCount ? ', plus <b>' + soaLastResult.presenceRowCount + ' row(s)</b> of Blinkit seller assortment/serviceability data for blinkit_presence' : '') +
       plainSummary + '.' +
       salesSummaryHtml +
       reportHtml + reconHtml +
@@ -3694,6 +3772,17 @@ function renderImport(el) {
       }
       return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: null };
     }).then(function(all) {
+      if (soaLastResult.presenceRowCount > 0) {
+        // No columnMap → the backend auto-detects this as Blinkit's own
+        // seller assortment/serviceability export (isRawBlinkitPresenceReport_)
+        // and resolves SKU (pack size + flavour) / city itself.
+        return api('importCsv', {
+          target: 'blinkit_presence', csv: soaLastResult.presenceCsv,
+          options: { dedupe: dedupe, source_file: 'blinkit-presence-report' }
+        }, 'POST').then(function(presenceResult) { return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: all.invResult, presenceResult: presenceResult }; });
+      }
+      return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: all.invResult, presenceResult: null };
+    }).then(function(all) {
       // Any sheets that matched one of our own tab schemas directly
       // (plainCsvs — e.g. a pre-built daily_sales_2026-03.csv dropped in
       // alongside or instead of a real SOA folder) import one at a time,
@@ -3709,11 +3798,11 @@ function renderImport(el) {
         });
       });
       return chain.then(function(plainResults) {
-        return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: all.invResult, plainResults: plainResults };
+        return { feesResult: all.feesResult, cashResult: all.cashResult, adsResult: all.adsResult, salesResult: all.salesResult, invResult: all.invResult, presenceResult: all.presenceResult, plainResults: plainResults };
       });
     }).then(function(all) {
-      var f = all.feesResult, c = all.cashResult, ad = all.adsResult, s = all.salesResult, iv = all.invResult, plains = all.plainResults || [];
-      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!ad || ad.ok !== false) && (!s || s.ok !== false) && (!iv || iv.ok !== false) &&
+      var f = all.feesResult, c = all.cashResult, ad = all.adsResult, s = all.salesResult, iv = all.invResult, pr = all.presenceResult, plains = all.plainResults || [];
+      var ok = (!f || f.ok !== false) && (!c || c.ok !== false) && (!ad || ad.ok !== false) && (!s || s.ok !== false) && (!iv || iv.ok !== false) && (!pr || pr.ok !== false) &&
         plains.every(function(p) { return p.result.ok !== false; });
       var status = ok
         ? '<div style="color:#15803d;font-weight:600">✓ Imported successfully.</div>'
@@ -3735,6 +3824,11 @@ function renderImport(el) {
         (iv ? '<div style="margin-top:4px"><b>inventory_snapshots:</b> ' + (iv.ok === false ? escapeHtml(iv.error || 'failed') :
           (iv.added + ' added, ' + iv.updated + ' updated, ' + iv.skipped_duplicate + ' dup skipped' +
            ((iv.auto_created_warehouses && iv.auto_created_warehouses.length) ? ', ' + iv.auto_created_warehouses.length + ' new warehouse(s) — verify their city in Master Data' : ''))) + '</div>' : '') +
+        (pr ? '<div style="margin-top:4px"><b>blinkit_presence:</b> ' + (pr.ok === false ? escapeHtml(pr.error || 'failed') :
+          (pr.added + ' added, ' + pr.updated + ' updated, ' + pr.skipped_duplicate + ' dup skipped' +
+           ((pr.blinkit_stats && pr.blinkit_stats.skipped_unmapped_sku) ? ', ' + pr.blinkit_stats.skipped_unmapped_sku + ' row(s) skipped (unmapped SKU)' : '') +
+           ((pr.auto_created_cities && pr.auto_created_cities.length) ? ', ' + pr.auto_created_cities.length + ' new city/cities' : ''))) +
+          '<span class="muted" style="font-size:11px"> — see the Expansion view for the listing-health breakdown this feeds.</span></div>' : '') +
         plains.map(function(p) {
           var r = p.result;
           return '<div style="margin-top:4px"><b>' + escapeHtml(p.target) + ':</b> ' + (r.ok === false ? escapeHtml(r.error || 'failed') :
