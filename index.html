@@ -1450,7 +1450,7 @@ function forecastActualTxt_(r) {
   var a = r.actual_value;
   if (!r.is_known_metric) return '<span class="muted" title="No auto-actual rule for this metric name">\u2014 (unrecognised metric)</span>';
   if (a == null) return '<span class="muted">' + (r.is_future ? 'not due yet' : 'no data') + '</span>';
-  return a.toLocaleString('en-IN') + (r.in_progress ? ' <span class="pill pill-info" style="font-size:11px;padding:2px 8px;margin-left:6px">month in progress</span>' : '');
+  return a.toLocaleString('en-IN');
 }
 function forecastNotesBlock_(rows) {
   var notes = [];
@@ -1507,14 +1507,14 @@ function renderForecast(el) {
 
     var past = d.past || [];
     var pastSortedDesc = past.slice().sort(function(a, b) { return a.month < b.month ? 1 : -1; });
-    var monthOptions = '<option value="__all">All past months</option>' +
-      pastSortedDesc.map(function(g) {
-        return '<option value="' + escapeHtml(g.month) + '">' + escapeHtml(monthLabel_(g.month)) + '</option>';
-      }).join('');
-    var pastHtml = past.length
-      ? past.map(function(g) {
-          return '<div class="fc-past-month" data-month="' + escapeHtml(g.month) + '">' + forecastMonthTable_(g) + '</div>';
-        }).join('')
+    var pastByMonth = {};
+    past.forEach(function(g) { pastByMonth[g.month] = g; });
+    var monthOptions = pastSortedDesc.map(function(g) {
+      return '<option value="' + escapeHtml(g.month) + '">' + escapeHtml(monthLabel_(g.month)) + '</option>';
+    }).join('');
+    var defaultPastGroup = pastSortedDesc.length ? pastSortedDesc[0] : null;
+    var pastBodyHtml = defaultPastGroup
+      ? forecastMonthTable_(defaultPastGroup)
       : '<div class="muted">No past forecast rows yet.</div>';
 
     el.innerHTML =
@@ -1534,15 +1534,14 @@ function renderForecast(el) {
         (restMonths.length ? '<button id="fc-show-more" style="margin-top:10px;padding:7px 14px;border:1px solid var(--nh-gray-line);background:#fff;color:var(--nh-navy);border-radius:6px;cursor:pointer">Show next ' + restMonths.length + ' months</button>' : '') +
       '</div>' +
       '<div class="panel">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">' +
-          '<h2 style="margin:0">Past months</h2>' +
-          '<div>' +
-            '<label style="font-size:12px;color:var(--nh-gray-text);margin-right:6px">Jump to month</label>' +
-            '<select id="fc-month-filter" style="padding:6px 10px;border:1px solid var(--nh-gray-line);border-radius:6px">' + monthOptions + '</select>' +
-          '</div>' +
-        '</div>' +
-        '<div class="desc" style="margin-top:6px">Pick any month (with year) to view it on its own, or leave on "All past months" to see the full history.</div>' +
-        '<div id="fc-past-body">' + pastHtml + '</div>' +
+        '<h2>Past months</h2>' +
+        (monthOptions
+          ? '<div style="margin:8px 0 14px">' +
+              '<label style="font-size:12px;color:var(--nh-gray-text);margin-right:6px">View month</label>' +
+              '<select id="fc-month-filter" style="padding:6px 10px;border:1px solid var(--nh-gray-line);border-radius:6px">' + monthOptions + '</select>' +
+            '</div>'
+          : '') +
+        '<div id="fc-past-body">' + pastBodyHtml + '</div>' +
       '</div>';
 
     var moreBtn = $('fc-show-more');
@@ -1555,11 +1554,10 @@ function renderForecast(el) {
 
     var monthFilterSel = $('fc-month-filter');
     if (monthFilterSel) {
+      if (defaultPastGroup) monthFilterSel.value = defaultPastGroup.month;
       monthFilterSel.addEventListener('change', function() {
-        var v = monthFilterSel.value;
-        Array.prototype.forEach.call(document.querySelectorAll('.fc-past-month'), function(node) {
-          node.style.display = (v === '__all' || node.getAttribute('data-month') === v) ? '' : 'none';
-        });
+        var g = pastByMonth[monthFilterSel.value];
+        $('fc-past-body').innerHTML = g ? forecastMonthTable_(g) : '<div class="muted">No data for this month.</div>';
       });
     }
   });
