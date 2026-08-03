@@ -564,8 +564,7 @@ function renderDashboard(el) {
       var cmCls = p.cm_per_unit >= 0 ? 'pill-ok' : (p.cm_per_unit >= -20 ? 'pill-warn' : 'pill-err');
       return '<tr>' +
         '<td><b>' + escapeHtml(p.platform_name) + '</b></td>' +
-        '<td class="num">' + p.units.toLocaleString('en-IN') + '</td>' +
-        '<td class="num">' + (p.packs||0).toLocaleString('en-IN') + '</td>' +
+        '<td class="num">' + p.units.toLocaleString('en-IN') + '<div class="muted" style="font-size:11px">\u2248' + (p.cases||0).toLocaleString('en-IN') + ' cases</div></td>' +
         '<td class="num">\u20B9' + p.revenue_per_unit.toFixed(2) + '</td>' +
         '<td class="num">\u20B9' + p.cogs_per_unit.toFixed(2) + '</td>' +
         '<td class="num">\u20B9' + p.platform_per_unit.toFixed(2) + '</td>' +
@@ -576,7 +575,7 @@ function renderDashboard(el) {
     }).join('');
     var platHtml = (d.byPlatform && d.byPlatform.length)
       ? '<table><thead><tr>' +
-          '<th>Platform</th><th class="num">Cans</th><th class="num">Cases</th>' +
+          '<th>Platform</th><th class="num">Cans (cases)</th>' +
           '<th class="num">Price / can</th>' +
           '<th class="num" title="Production cost">COGS / can</th>' +
           '<th class="num" title="Storage + Shipping + Commission + TDS + Lost/Damaged">Platform fees / can</th>' +
@@ -589,8 +588,7 @@ function renderDashboard(el) {
     el.innerHTML =
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Revenue</div><div class="value">' + inr(k.revenue) + '</div><div class="sub">' + d.range.from + ' &rarr; ' + d.range.to + '</div></div>' +
-        '<div class="kpi"><div class="label">Cans Sold</div><div class="value">' + (k.units||0).toLocaleString('en-IN') + '</div><div class="sub">Avg \u20B9' + k.avg_price_per_unit + '/can sold</div></div>' +
-        '<div class="kpi"><div class="label">Cases Sold</div><div class="value">' + (k.packs||0).toLocaleString('en-IN') + '</div><div class="sub">Native SKU/listing count \u2014 a 6-pack or 2-pack sells as 1 case</div></div>' +
+        '<div class="kpi"><div class="label">Cans Sold</div><div class="value">' + (k.units||0).toLocaleString('en-IN') + '</div><div class="sub">\u2248 ' + (k.cases||0).toLocaleString('en-IN') + ' cases (24 cans/case) \u00B7 Avg \u20B9' + k.avg_price_per_unit + '/can</div></div>' +
         '<div class="kpi ' + costUnitClass + '"><div class="label">Cost / Can</div><div class="value">\u20B9' + (k.cost_per_unit||0).toFixed(2) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
         '<div class="kpi ' + cmUnitClass + '"><div class="label">CM / Can</div><div class="value">\u20B9' + (k.cm_per_unit||0).toFixed(2) + '</div><div class="sub">Price \u2212 Total cost</div></div>' +
         '<div class="kpi ' + roasClass + '"><div class="label">ROAS</div><div class="value">' + k.roas + 'x</div><div class="sub">Ad spend ' + inr(k.ad_spend) + '</div></div>' +
