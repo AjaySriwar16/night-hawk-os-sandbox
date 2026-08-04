@@ -1214,6 +1214,26 @@ function renderListingHealthHtml_(presence) {
     rowsHtml + '</tbody></table></div>';
 }
 
+// Every uncovered city for a SKU, ranked by same-flavour demand (see
+// cityQueueForSku_ on the backend) — minus whichever city the row is
+// already targeting, since that one's shown plainly in the City column
+// already. Collapsed by default since a lagging SKU can have 40+ of these.
+function cityQueueHtml_(r) {
+  var q = r.city_queue || [];
+  var rest = q.filter(function(c) { return c.city_id !== r.city_id; });
+  if (!rest.length) return '';
+  var items = rest.map(function(c, i) {
+    var demand = c.flavor_revenue > 0
+      ? inr(c.flavor_revenue)
+      : (c.overall_revenue > 0
+        ? '<span class="muted">' + inr(c.overall_revenue) + ' (overall, no flavour data)</span>'
+        : '<span class="muted">no demand data yet</span>');
+    return '<div style="font-size:12px;padding:2px 0">' + (i + 1) + '. ' + escapeHtml(c.city) + ' — ' + demand + '</div>';
+  }).join('');
+  return '<details style="margin-top:4px"><summary class="muted" style="cursor:pointer;font-size:11px">+' + rest.length + ' more ' + (rest.length === 1 ? 'city' : 'cities') + ' queued</summary>' +
+    '<div style="max-height:180px;overflow:auto;margin-top:4px">' + items + '</div></details>';
+}
+
 function renderExpansion(el) {
   setLoading(el);
   return Promise.all([
@@ -1268,7 +1288,7 @@ function renderExpansion(el) {
             : '<span class="muted">—</span>';
           return '<tr data-id="' + escapeHtml(r.expansion_id) + '">' +
             '<td>' + escapeHtml(r.sku) + '</td>' +
-            '<td>' + escapeHtml(r.city) + '</td>' +
+            '<td>' + escapeHtml(r.city) + cityQueueHtml_(r) + '</td>' +
             '<td>' + escapeHtml(r.start_date||'') + '</td>' +
             '<td>' + escapeHtml(r.end_date||'') + '</td>' +
             '<td><span class="pill ' + cls + '">' + escapeHtml(r.status) + '</span></td>' +
