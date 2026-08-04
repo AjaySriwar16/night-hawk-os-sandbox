@@ -2514,14 +2514,19 @@ function renderCash(el) {
       ) : '<div class="muted">No entries yet. Click "+ Add entry" to record your opening balance.</div>') +
     '</div>';
 
+    var LEDGER_SHOW_MAX = 100;
+    var ledgerRows = d.entries.slice(0, LEDGER_SHOW_MAX);
     html += '<div class="panel">' +
       '<h2>Ledger (newest first)</h2>' +
+      '<div class="desc" style="margin-top:-4px">Same-date, same-type, same-category entries are summed into one row (e.g. a batch of small per-order reimbursements landing on one settlement date) so this stays readable.' +
+      (d.entries.length > LEDGER_SHOW_MAX ? ' Showing the latest ' + LEDGER_SHOW_MAX + ' of ' + d.entries.length + ' rows — older history is in the <code>cash_ledger</code> tab / computed monthly totals above.' : '') +
+      '</div>' +
       '<table><thead><tr><th>Date</th><th>Type</th><th>Category</th><th class="num">Amount</th><th class="num">Balance</th><th>Notes</th></tr></thead><tbody>' +
-      d.entries.map(function(e) {
+      ledgerRows.map(function(e) {
         var typeCls = e.type === 'inflow' ? 'pill-ok' : (e.type === 'outflow' ? 'pill-err' : 'pill-info');
         return '<tr><td>' + escapeHtml(e.date) + '</td>' +
           '<td><span class="pill ' + typeCls + '">' + escapeHtml(e.type) + '</span></td>' +
-          '<td>' + escapeHtml(e.category) + '</td>' +
+          '<td>' + escapeHtml(e.category) + (e.count > 1 ? ' <span class="muted" style="font-size:11px">(' + e.count + 'x)</span>' : '') + '</td>' +
           '<td class="num">' + inr(e.amount) + '</td>' +
           '<td class="num">' + inr(e.balance) + '</td>' +
           '<td>' + escapeHtml(e.notes) + '</td></tr>';
