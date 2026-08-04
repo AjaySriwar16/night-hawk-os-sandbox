@@ -2484,13 +2484,13 @@ function renderCash(el) {
 
     var html =
       '<div class="panel" style="margin-bottom:14px">' +
-      '<div class="desc" style="margin:0"><b>Scope:</b> every number on this page comes only from Blinkit settlement credit/debit notes recorded in the <code>cash_ledger</code> tab. It does not include salaries, rent, founder capital, or any other real company expense unless you log it yourself with "+ Add entry" below. Treat "Runway" here as <i>"is Blinkit\u2019s payout position net-positive"</i>, not total company survival time \u2014 for that, add your real expenses as outflow entries too.</div>' +
+      '<div class="desc" style="margin:0"><b>Scope:</b> inflow is your real settled sales revenue and outflow is real storage + shipping + commission + TDS + lost/damaged fees + ad spend, computed live from the same daily_sales/daily_fees/daily_ad_spend data as the rest of the dashboard \u2014 plus anything you\u2019ve separately logged in <code>cash_ledger</code> (founder capital, CN-DN adjustment notes, TDS/TCS reimbursements, manual entries). It still does not include salaries, rent, or any other real company expense outside Blinkit unless you log it yourself with "+ Add entry" below. Treat "Runway" here as <i>"is the Blinkit business itself cash-positive"</i>, not total company survival time \u2014 for that, add your real off-platform expenses as outflow entries too.</div>' +
       '</div>' +
       '<div class="kpi-grid">' +
       '<div class="kpi"><div class="label">Cash balance</div><div class="value">' + inr(bal) + '</div><div class="sub">running total of every ledger entry below</div></div>' +
       '<div class="kpi ' + burnCls + '"><div class="label">' + burnLabel + '</div><div class="value">' + burnValue + '</div><div class="sub">' + burnSub + '</div></div>' +
-      '<div class="kpi"><div class="label">Avg inflow</div><div class="value">' + inr(d.avg_monthly_inflow) + '</div><div class="sub">per month, Blinkit settlements only</div></div>' +
-      '<div class="kpi"><div class="label">Avg outflow</div><div class="value">' + inr(d.avg_monthly_outflow) + '</div><div class="sub">per month, Blinkit settlements only</div></div>' +
+      '<div class="kpi"><div class="label">Avg inflow</div><div class="value">' + inr(d.avg_monthly_inflow) + '</div><div class="sub">per month — revenue + logged inflows</div></div>' +
+      '<div class="kpi"><div class="label">Avg outflow</div><div class="value">' + inr(d.avg_monthly_outflow) + '</div><div class="sub">per month — fees, ad spend + logged outflows</div></div>' +
       '<div class="kpi ' + runwayCls + '"><div class="label">Runway</div><div class="value">' + runwayValue + '</div><div class="sub">' + runwaySub + ' \u00B7 balance \u00F7 burn</div></div>' +
       (d.projected_breakeven_month ?
         '<div class="kpi ok"><div class="label">Projected break-even</div><div class="value">' + escapeHtml(d.projected_breakeven_month) + '</div><div class="sub">if burn-reduction trend continues</div></div>'
