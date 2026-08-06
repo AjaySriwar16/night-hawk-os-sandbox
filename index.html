@@ -1154,12 +1154,8 @@ function renderInventory(el) {
     }
     var rowsHtml = d.rows.map(function(r) {
       var flag = r.cover_flag === 'critical' ? 'pill-err' : (r.cover_flag === 'warning' ? 'pill-warn' : 'pill-ok');
-      var orderTxt = (r.reorder && r.reorder.recommended_qty)
-        ? ' <span class="pill pill-info" style="font-size:10px" title="Recommended reorder qty">order ' + r.reorder.recommended_qty + '</span>'
-        : '';
-      var runTxt = r.daily_run +
-        (r.demand_suppressed ? ' <span class="pill pill-warn" style="font-size:10px" title="7-day sales look stockout-suppressed \u2014 using the 15/30-day trend instead">adj.</span>' : '') +
-        orderTxt;
+      var orderTxt = ' <span class="pill pill-info" style="font-size:10px" title="Units to top up to target cover (0 = already well-stocked)">order ' + r.order_qty + '</span>';
+      var runTxt = r.daily_run + orderTxt;
       var coverTxt = (r.cover_days === null)
         ? '<span class="muted" title="No sales in the last 30 days \u2014 stock isn\'t moving, but not at stockout risk">no sales</span>'
         : r.cover_days;
@@ -1176,7 +1172,7 @@ function renderInventory(el) {
     }).join('');
     el.innerHTML = reorderHtml +
       '<div class="panel"><h2>Latest snapshot \u2014 ' + escapeHtml(d.snapshot_date) + '</h2>' +
-      '<div class="desc">Daily run = 7-day sold \u00f7 7 by default. When a warehouse ran low on stock recently (so the 7-day number likely undercounts real demand rather than reflecting a genuine drop), it switches to the 15/30-day trend instead and shows "adj." \u2014 hover it for why. Rows with a recommended reorder also show the order qty right next to Daily run. Among rows with healthy stock (\u201cok\u201d), \uD83D\uDC4D marks warehouses turning the SKU over at a good pace and \uD83D\uDC4E marks slow-moving stock worth reviewing.</div>' +
+      '<div class="desc">Daily run = 7-day sold \u00f7 7 by default, using the 15/30-day trend instead when a warehouse likely ran low on stock recently (so the raw 7-day number would undercount real demand). Order qty next to Daily run is units needed to top up to target cover \u2014 0 means already well-stocked. \uD83D\uDC4D marks a good, healthy sales pace for that row; \uD83D\uDC4E marks nothing selling or far more stock sitting there than the sales pace justifies.</div>' +
       '<table><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Unsellable</th><th class="num">Damaged</th><th class="num">Lost</th><th class="num">7d sold</th><th class="num">15d sold</th><th class="num">30d sold</th><th class="num">Daily run</th><th class="num">Cover (d)</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
     renderInventoryUploadPanel_(el);
 
