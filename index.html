@@ -1167,7 +1167,7 @@ function renderInventory(el) {
     }).join('');
     el.innerHTML = reorderHtml +
       '<div class="panel"><h2>Latest snapshot \u2014 ' + escapeHtml(d.snapshot_date) + '</h2>' +
-      '<div class="desc">Daily run = 7-day sold \u00f7 7 by default, using the 15/30-day trend instead when a warehouse likely ran low on stock recently (so the raw 7-day number would undercount real demand). Order qty next to Daily run is units needed to top up to target cover \u2014 0 means already well-stocked. \uD83D\uDC4D marks a good, healthy sales pace for that row; \uD83D\uDC4E marks nothing selling or far more stock sitting there than the sales pace justifies.</div>' +
+      '<div class="desc">Daily run = 7-day sold \u00f7 7 by default, using the 15/30-day trend instead when a warehouse likely ran low on stock recently (so the raw 7-day number would undercount real demand). Order qty next to Daily run is units needed to top up to target cover \u2014 0 means already well-stocked. \uD83D\uDC4D marks more than 1 unit/day moving; \uD83D\uDC4E marks 1/day or less (including zero).</div>' +
       '<table><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Unsellable</th><th class="num">Damaged</th><th class="num">Lost</th><th class="num">7d sold</th><th class="num">15d sold</th><th class="num">30d sold</th><th class="num">Daily run</th><th class="num">Cover (d)</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
     renderInventoryUploadPanel_(el);
 
