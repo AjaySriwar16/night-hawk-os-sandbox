@@ -1118,13 +1118,10 @@ function renderInventory(el) {
     // Reorder panel
     var reorderHtml = '';
     if (d.reorder && d.reorder.length) {
-      var anySuppressed = d.reorder.some(function(r) { return r.demand_suppressed; });
       var reorderRows = d.reorder.map(function(r) {
         var u = r.reorder.urgency;
         var pillCls = u === 'critical' ? 'pill-err' : (u === 'high' ? 'pill-warn' : 'pill-info');
-        var runTxt = r.daily_run + '/day' + (r.demand_suppressed
-          ? ' <span class="pill pill-warn" style="font-size:10px" title="' + escapeHtml(r.reorder.rationale) + '">using 15/30d trend</span>'
-          : '');
+        var runTxt = r.daily_run + '/day';
         return '<tr>' +
           '<td><span class="pill ' + pillCls + '">' + escapeHtml(u) + '</span></td>' +
           '<td>' + escapeHtml(r.sku) + '</td>' +
@@ -1146,9 +1143,7 @@ function renderInventory(el) {
           ' <span class="pill pill-warn" style="margin-left:8px">' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + ' low</span>' +
           ' <span class="pill pill-warn">' + reorderWhCount + ' warehouse' + (reorderWhCount === 1 ? '' : 's') + '</span>' +
         '</h2>' +
-        '<div class="desc">These ' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + (reorderSkuCount === 1 ? ' is' : ' are') + ' running low, split across ' + reorderWhCount + ' warehouses — that\'s why the table below has ' + d.reorder.length + ' rows (one per SKU + warehouse pair). Target cover: ' + (state.boot.config.REORDER_TARGET_COVER_DAYS || 21) + 'd, lead time: ' + (state.boot.config.REORDER_LEAD_TIME_DAYS || 7) + 'd. Click "Log as issue" to hand off to ops.' +
-          (anySuppressed ? ' Rows tagged "using 15/30d trend" ran low on stock recently, which depresses the raw 7-day sales number below true demand — those use the longer-window rate instead so the order quantity isn\'t artificially small.' : '') +
-        '</div>' +
+        '<div class="desc">These ' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + (reorderSkuCount === 1 ? ' is' : ' are') + ' running low, split across ' + reorderWhCount + ' warehouses — that\'s why the table below has ' + d.reorder.length + ' rows (one per SKU + warehouse pair). Target cover: ' + (state.boot.config.REORDER_TARGET_COVER_DAYS || 21) + 'd, lead time: ' + (state.boot.config.REORDER_LEAD_TIME_DAYS || 7) + 'd. Click "Log as issue" to hand off to ops.</div>' +
         '<table><thead><tr><th>Urgency</th><th>SKU</th><th>Warehouse</th><th class="num">Sellable</th><th class="num">Daily run</th><th class="num">Cover</th><th class="num">Order qty</th><th>By date</th><th></th></tr></thead><tbody>' + reorderRows + '</tbody></table>' +
         '</div>';
     }
