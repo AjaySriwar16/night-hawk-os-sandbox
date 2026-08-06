@@ -1149,21 +1149,21 @@ function renderInventory(el) {
     }
     var rowsHtml = d.rows.map(function(r) {
       var flag = r.cover_flag === 'critical' ? 'pill-err' : (r.cover_flag === 'warning' ? 'pill-warn' : 'pill-ok');
-      var orderTxt = ' <span class="pill pill-info" style="font-size:10px" title="Units to top up to target cover (0 = already well-stocked)">order ' + r.order_qty + '</span>';
-      var runTxt = r.daily_run + orderTxt;
+      var orderTxt = '<div style="margin-top:3px"><span class="pill pill-info" style="font-size:10px" title="Units to top up to target cover (0 = already well-stocked)">order ' + r.order_qty + '</span></div>';
+      var runTxt = '<div>' + r.daily_run + '</div>' + orderTxt;
       var coverTxt = (r.cover_days === null)
         ? '<span class="muted" title="No sales in the last 30 days \u2014 stock isn\'t moving, but not at stockout risk">no sales</span>'
         : r.cover_days;
       var perfTxt = '';
-      if (r.performance === 'good') perfTxt = ' <span title="Healthy turnover \u2014 selling at a good pace" style="color:var(--nh-ok)">\uD83D\uDC4D</span>';
-      else if (r.performance === 'poor') perfTxt = ' <span title="Slow-moving \u2014 stock is sitting with little/no recent turnover" style="color:var(--nh-err)">\uD83D\uDC4E</span>';
+      if (r.performance === 'good') perfTxt = '<span title="Healthy turnover \u2014 selling at a good pace" style="color:var(--nh-ok)">\uD83D\uDC4D</span>';
+      else if (r.performance === 'poor') perfTxt = '<span title="Slow-moving \u2014 stock is sitting with little/no recent turnover" style="color:var(--nh-err)">\uD83D\uDC4E</span>';
       return '<tr><td>' + escapeHtml(r.warehouse) + '</td><td>' + escapeHtml(r.sku) + '</td>' +
              '<td class="num">' + r.sellable + '</td><td class="num">' + r.unsellable + '</td>' +
              '<td class="num">' + r.damaged + '</td><td class="num">' + r.lost + '</td>' +
              '<td class="num">' + r.sold_7d + '</td><td class="num">' + r.sold_15d + '</td><td class="num">' + r.sold_30d + '</td>' +
              '<td class="num">' + runTxt + '</td>' +
              '<td class="num">' + coverTxt + '</td>' +
-             '<td><span class="pill ' + flag + '">' + escapeHtml(r.cover_flag) + '</span>' + perfTxt + '</td></tr>';
+             '<td><span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap"><span class="pill ' + flag + '">' + escapeHtml(r.cover_flag) + '</span>' + perfTxt + '</span></td></tr>';
     }).join('');
     el.innerHTML = reorderHtml +
       '<div class="panel"><h2>Latest snapshot \u2014 ' + escapeHtml(d.snapshot_date) + '</h2>' +
