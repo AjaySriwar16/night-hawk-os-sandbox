@@ -4109,26 +4109,87 @@ function renderImport(el) {
   setMode('upload');
 }
 
+function masterStatusPill_(status) {
+  var key = String(status || '').trim().toLowerCase();
+  var cls = (key === 'active') ? 'pill-ok' : (key === 'planned' || key === 'trial') ? 'pill-info' : (status ? 'pill-warn' : 'pill-info');
+  return '<span class="pill ' + cls + '">' + escapeHtml(status || '\u2014') + '</span>';
+}
 function renderMaster(el) {
   var b = state.boot;
-  function escRow(cells) { return '<tr>' + cells.map(function(c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('') + '</tr>'; }
-  var skuRows = (b.skus||[]).map(function(s) { return escRow([s.sku_id, s.name, '\u20B9'+s.mrp, s.status]); }).join('');
-  var cityRows = (b.cities||[]).map(function(c) { return escRow([c.city_id, c.name, c.state, c.status]); }).join('');
-  var whRows = (b.warehouses||[]).map(function(w) { return escRow([w.warehouse_id, w.facility_id, w.name]); }).join('');
-  var plRows = (b.platforms||[]).map(function(p) { return escRow([p.platform_id, p.name, p.status]); }).join('');
+  var skus = b.skus || [], cities = b.cities || [], warehouses = b.warehouses || [], platforms = b.platforms || [];
+
+  var skuActive = skus.filter(function(s) { return String(s.status).toLowerCase() === 'active'; }).length;
+  var cityActive = cities.filter(function(c) { return String(c.status).toLowerCase() === 'active'; }).length;
+  var cityPlanned = cities.filter(function(c) { return String(c.status).toLowerCase() === 'planned'; }).length;
+  var platformActive = platforms.filter(function(p) { return String(p.status).toLowerCase() === 'active'; }).length;
+
+  var skuRows = skus.map(function(s) {
+    return '<tr><td>' + escapeHtml(s.sku_id) + '</td><td>' + escapeHtml(s.name) + '</td>' +
+      '<td class="num">\u20B9' + escapeHtml(s.mrp) + '</td><td>' + masterStatusPill_(s.status) + '</td></tr>';
+  }).join('');
+
+  var cityRows = cities.map(function(c) {
+    return '<tr class="master-city-row" data-search="' + escapeHtml((c.name + ' ' + (c.state||'')).toLowerCase()) + '">' +
+      '<td>' + escapeHtml(c.city_id) + '</td><td>' + escapeHtml(c.name) + '</td>' +
+      '<td>' + escapeHtml(c.state || '\u2014') + '</td><td>' + masterStatusPill_(c.status) + '</td></tr>';
+  }).join('');
+
+  var whRows = warehouses.map(function(w) {
+    return '<tr><td>' + escapeHtml(w.warehouse_id) + '</td><td>' + escapeHtml(w.facility_id) + '</td><td>' + escapeHtml(w.name) + '</td></tr>';
+  }).join('');
+
+  var plRows = platforms.map(function(p) {
+    return '<tr><td>' + escapeHtml(p.platform_id) + '</td><td>' + escapeHtml(p.name) + '</td><td>' + masterStatusPill_(p.status) + '</td></tr>';
+  }).join('');
+
   el.innerHTML =
-    '<div class="panel"><h2>Master Data (read-only view)</h2>' +
-    '<div class="desc">Edit these tabs directly in the Google Sheet. The app reads them on every refresh.</div>' +
+    '<div class="kpi-grid">' +
+      '<div class="kpi"><div class="label">SKUs</div><div class="value">' + skus.length + '</div><div class="sub">' + skuActive + ' active</div></div>' +
+      '<div class="kpi"><div class="label">Cities</div><div class="value">' + cities.length + '</div><div class="sub">' + cityActive + ' active \u00B7 ' + cityPlanned + ' planned</div></div>' +
+      '<div class="kpi"><div class="label">Warehouses</div><div class="value">' + warehouses.length + '</div><div class="sub">across all active cities</div></div>' +
+      '<div class="kpi"><div class="label">Platforms</div><div class="value">' + platforms.length + '</div><div class="sub">' + platformActive + ' active</div></div>' +
+    '</div>' +
+
+    '<div class="panel"><div class="desc" style="margin:0">Read-only \u2014 edit these tabs directly in the Google Sheet. The app reads them on every refresh.</div></div>' +
+
     '<div class="two-col">' +
-    '<div><h3>SKUs</h3>' +
-    '<table><thead><tr><th>ID</th><th>Name</th><th>MRP</th><th>Status</th></tr></thead><tbody>' + skuRows + '</tbody></table>' +
-    '<h3 style="margin-top:16px">Cities</h3>' +
-    '<table><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Status</th></tr></thead><tbody>' + cityRows + '</tbody></table></div>' +
-    '<div><h3>Warehouses</h3>' +
-    '<table><thead><tr><th>ID</th><th>Facility</th><th>Name</th></tr></thead><tbody>' + whRows + '</tbody></table>' +
-    '<h3 style="margin-top:16px">Platforms</h3>' +
-    '<table><thead><tr><th>ID</th><th>Name</th><th>Status</th></tr></thead><tbody>' + plRows + '</tbody></table></div>' +
-    '</div></div>';
+      '<div class="panel">' +
+        '<h2>SKUs <span class="pill pill-info" style="margin-left:6px">' + skus.length + '</span></h2>' +
+        '<table><thead><tr><th>ID</th><th>Name</th><th class="num">MRP</th><th>Status</th></tr></thead><tbody>' + (skuRows || '<tr><td colspan="4" class="muted">No SKUs yet</td></tr>') + '</tbody></table>' +
+      '</div>' +
+      '<div class="panel">' +
+        '<h2>Platforms <span class="pill pill-info" style="margin-left:6px">' + platforms.length + '</span></h2>' +
+        '<table><thead><tr><th>ID</th><th>Name</th><th>Status</th></tr></thead><tbody>' + (plRows || '<tr><td colspan="3" class="muted">No platforms yet</td></tr>') + '</tbody></table>' +
+        '<h2 style="margin-top:18px">Warehouses <span class="pill pill-info" style="margin-left:6px">' + warehouses.length + '</span></h2>' +
+        '<div style="max-height:260px;overflow:auto"><table><thead><tr><th>ID</th><th>Facility</th><th>Name</th></tr></thead><tbody>' + (whRows || '<tr><td colspan="3" class="muted">No warehouses yet</td></tr>') + '</tbody></table></div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="panel">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">' +
+        '<h2 style="margin:0">Cities <span class="pill pill-info" style="margin-left:6px">' + cities.length + '</span></h2>' +
+        '<input id="master-city-search" placeholder="Filter by city or state\u2026" style="padding:8px 12px;border:1px solid var(--nh-gray-line);border-radius:8px;font-size:13px;min-width:220px">' +
+      '</div>' +
+      '<div style="max-height:420px;overflow:auto">' +
+        '<table><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Status</th></tr></thead><tbody id="master-city-tbody">' + (cityRows || '<tr><td colspan="4" class="muted">No cities yet</td></tr>') + '</tbody></table>' +
+      '</div>' +
+      '<div id="master-city-empty" class="muted hidden" style="padding:14px 4px">No cities match that search.</div>' +
+    '</div>';
+
+  var searchInput = $('master-city-search');
+  if (searchInput) {
+    searchInput.addEventListener('input', function() {
+      var q = searchInput.value.trim().toLowerCase();
+      var rows = document.querySelectorAll('.master-city-row');
+      var visible = 0;
+      rows.forEach(function(row) {
+        var match = !q || row.getAttribute('data-search').indexOf(q) !== -1;
+        row.classList.toggle('hidden', !match);
+        if (match) visible++;
+      });
+      $('master-city-empty').classList.toggle('hidden', visible !== 0);
+    });
+  }
 }
 
 init();
