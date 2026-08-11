@@ -625,7 +625,7 @@ function switchView(v) {
   $('view-marketing').classList.toggle('hidden', !isMkt);
   loadView(v);
 }
-var PLATFORM_FILTER_VIEWS_ = { brief:1, dashboard:1, sales:1, 'unit-econ':1, ads:1 };
+var PLATFORM_FILTER_VIEWS_ = { brief:1, dashboard:1, sales:1, 'unit-econ':1, ads:1, inventory:1 };
 function reloadCurrentView() { loadView(currentView); }
 
 function loadView(v) {
@@ -893,6 +893,22 @@ function renderSales(el) {
   });
 }
 
+// Per-can figures are volume-weighted AVERAGES across whatever platforms are
+// in scope — they deliberately do NOT add up. With "All platforms" selected,
+// Revenue/can sits between Blinkit's and Swiggy's, pulled toward whichever
+// sold more cans; it is total revenue / total cans, not Blinkit's ₹/can plus
+// Swiggy's. The underlying totals (revenue, cans, fees) DO sum exactly. This
+// note exists because a blended ₹77.12 sitting between ₹74.60 and ₹99.00
+// reads as "the filter isn't adding up" unless the averaging is stated.
+function perCanBlendNote_(k) {
+  if (state.filter.platformId) return '';
+  return '<div class="panel" style="padding:10px 14px"><div class="muted">' +
+    'Per-can figures below are <b>volume-weighted averages</b> across all platforms ' +
+    '(total \u00F7 ' + (k.units || 0).toLocaleString('en-IN') + ' cans) \u2014 they sit between each ' +
+    'platform\u2019s own per-can numbers rather than adding together. Pick a single platform ' +
+    'above to see its figures on their own.' +
+    '</div></div>';
+}
 function renderUnitEcon(el) {
   setLoading(el);
   return api('dashboard', state.filter).then(function(d) {
@@ -922,6 +938,7 @@ function renderUnitEcon(el) {
              '<td class="num">' + (k.revenue ? ((v*units/k.revenue)*100).toFixed(1)+'%' : '\u2014') + '</td></tr>';
     }).join('');
     el.innerHTML =
+      perCanBlendNote_(k) +
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Revenue / Can</div><div class="value">\u20B9' + (k.revenue/units).toFixed(2) + '</div><div class="sub">' + k.units + ' cans</div></div>' +
         '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">\u20B9' + totalCostU.toFixed(2) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
@@ -1190,7 +1207,7 @@ function renderInventoryUploadPanel_(el) {
 
 function renderInventory(el) {
   setLoading(el);
-  return api('inventory', {}).then(function(d) {
+  return api('inventory', { platformId: state.filter.platformId }).then(function(d) {
     if (!d.rows || !d.rows.length) {
       // Bug fix: this used to fetch unfiltered inventory regardless of the
       // platform dropdown, so switching to Swiggy Instamart silently kept
