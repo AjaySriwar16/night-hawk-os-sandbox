@@ -911,90 +911,79 @@ function renderSales(el) {
   });
 }
 
-// A single blended per-can figure is actively misleading when platforms sit
-// on opposite sides of zero: Blinkit loses money per can while Swiggy makes
-// money per can, and total ÷ total collapses that into one number that
-// describes neither. (It is still the arithmetically correct overall margin —
-// total CM ÷ total cans — which is why the tiles keep it, clearly labelled
-// as blended — but it must not be the ONLY thing shown.) So with "All
-// platforms" selected, show each platform's own economics side by side, and
-// the blend as an explicit final row rather than an unexplained average.
+// With "All platforms" selected there is no honest single per-can number:
+// Blinkit loses money on every can while Swiggy makes money on every can, so
+// any blend of the two (however correctly weighted) describes neither and
+// reads as if every can loses money. Per-can figures are therefore shown
+// ONLY per platform, never combined. What legitimately combines is rupees —
+// revenue, cost and contribution genuinely add up across platforms — so the
+// headline tiles switch to rupee totals, and the cost decomposition switches
+// from "₹ / can" to "₹ total". Selecting a single platform restores the
+// per-can view, where a per-can number is unambiguous.
+function unitEconMoney_(v) { return '₹' + (v || 0).toFixed(2); }
 function perPlatformUnitEconPanel_(d) {
-  if (state.filter.platformId) return '';
   var bp = (d.byPlatform || []).filter(function(p) { return (p.units || 0) > 0; });
-  if (bp.length < 2) return '';
-  var k = d.kpis, u = k.units || 1;
-  function money(v) { return '₹' + (v || 0).toFixed(2); }
+  if (state.filter.platformId || bp.length < 2) return '';
   function cmCell(v) {
-    var cls = v >= 0 ? 'pill-ok' : 'pill-err';
-    return '<td class="num"><span class="pill ' + cls + '">' + money(v) + '</span></td>';
+    return '<td class="num"><span class="pill ' + (v >= 0 ? 'pill-ok' : 'pill-err') + '">' +
+           unitEconMoney_(v) + '</span></td>';
   }
   var rows = bp.map(function(p) {
     return '<tr><td><b>' + escapeHtml(p.platform_name) + '</b></td>' +
       '<td class="num">' + (p.units || 0).toLocaleString('en-IN') + '</td>' +
-      '<td class="num">' + money(p.revenue_per_unit) + '</td>' +
-      '<td class="num">' + money(p.cogs_per_unit) + '</td>' +
-      '<td class="num">' + money(p.ad_per_unit) + '</td>' +
-      '<td class="num">' + money(p.platform_per_unit) + '</td>' +
-      '<td class="num"><b>' + money(p.cost_per_unit) + '</b></td>' +
+      '<td class="num">' + unitEconMoney_(p.revenue_per_unit) + '</td>' +
+      '<td class="num">' + unitEconMoney_(p.cogs_per_unit) + '</td>' +
+      '<td class="num">' + unitEconMoney_(p.ad_per_unit) + '</td>' +
+      '<td class="num">' + unitEconMoney_(p.platform_per_unit) + '</td>' +
+      '<td class="num"><b>' + unitEconMoney_(p.cost_per_unit) + '</b></td>' +
       cmCell(p.cm_per_unit) + '</tr>';
   }).join('');
-  var blended = '<tr style="border-top:2px solid var(--nh-gray-line)">' +
-    '<td><b>Blended (all platforms)</b></td>' +
-    '<td class="num"><b>' + (k.units || 0).toLocaleString('en-IN') + '</b></td>' +
-    '<td class="num">' + money(k.revenue / u) + '</td>' +
-    '<td class="num">' + money(k.cogs / u) + '</td>' +
-    '<td class="num">' + money(k.ad_spend / u) + '</td>' +
-    '<td class="num">' + money(k.platform_per_unit) + '</td>' +
-    '<td class="num"><b>' + money(k.cost_per_unit) + '</b></td>' +
-    cmCell(k.cm_per_unit) + '</tr>';
   return '<div class="panel"><h2>Per-can economics by platform</h2>' +
-    '<div class="desc">Each platform earns and costs a different amount per can, so a single ' +
-    'blended figure can hide that one platform is profitable while another loses money. ' +
-    'The blended row is total ÷ total cans — a volume-weighted result, not the two rows added ' +
-    'together — so it always lands between them, nearer whichever platform sold more.</div>' +
+    '<div class="desc">Shown separately per platform on purpose. These figures are ' +
+    '<b>not combined into one</b> — each platform earns and costs a different amount per can, ' +
+    'and one is profitable while the other is not, so a single merged per-can number would be ' +
+    'meaningless. Select a platform in the top bar to drill into just that one.</div>' +
     '<table><thead><tr><th>Platform</th><th class="num">Cans</th><th class="num">Revenue</th>' +
     '<th class="num">COGS</th><th class="num">Ads</th><th class="num">Platform fees</th>' +
     '<th class="num">Total cost</th><th class="num">CM / can</th></tr></thead>' +
-    '<tbody>' + rows + blended + '</tbody></table></div>';
+    '<tbody>' + rows + '</tbody></table></div>';
 }
 function renderUnitEcon(el) {
   setLoading(el);
   return api('dashboard', state.filter).then(function(d) {
-    var k = d.kpis; var units = k.units || 1;
-    var rows = [
-      ['Revenue / can', k.revenue / units],
-      ['COGS / can', k.cogs / units],
-      ['Ad spend / can', k.ad_spend / units],
-      ['Storage / can', k.storage_fee / units],
-      ['Shipping / can', k.shipping_fee / units],
-      ['Commission / can', k.commission_fee / units],
-      ['TDS / can', k.tds / units],
-      ['Lost/Damaged / can', k.lost_damaged / units]
+    var k = d.kpis;
+    var units = k.units || 1;
+    var multi = !state.filter.platformId &&
+                (d.byPlatform || []).filter(function(p) { return (p.units || 0) > 0; }).length > 1;
+    var lines = [
+      ['Revenue', k.revenue], ['COGS', k.cogs], ['Ad spend', k.ad_spend],
+      ['Storage', k.storage_fee], ['Shipping', k.shipping_fee],
+      ['Commission', k.commission_fee], ['TDS', k.tds], ['Lost/Damaged', k.lost_damaged]
     ];
-    // Use the backend's own cost_per_unit/cm_per_unit (COGS + Ads + Platform
-    // fees, same definition as the Dashboard tab's "Cost / Can" and "CM /
-    // Can" tiles) instead of a locally-recomputed, COGS-excluded total \u2014
-    // this view used to leave COGS out entirely, which understated total
-    // cost and overstated margin, and disagreed with the Dashboard's own
-    // numbers for the same range.
-    var totalCostU = k.cost_per_unit;
-    var cmU = k.cm_per_unit;
-    var rowsHtml = rows.map(function(x) {
-      var name = x[0], v = x[1];
-      return '<tr><td>' + escapeHtml(name) + '</td>' +
-             '<td class="num">\u20B9' + (v||0).toFixed(2) + '</td>' +
-             '<td class="num">' + (k.revenue ? ((v*units/k.revenue)*100).toFixed(1)+'%' : '\u2014') + '</td></tr>';
+    // Rupee totals across platforms are real sums; per-can values are not.
+    var rowsHtml = lines.map(function(x) {
+      var name = x[0], total = x[1] || 0;
+      var valCell = multi
+        ? inr(Math.round(total))
+        : unitEconMoney_(total / units);
+      return '<tr><td>' + escapeHtml(name) + (multi ? '' : ' / can') + '</td>' +
+             '<td class="num">' + valCell + '</td>' +
+             '<td class="num">' + (k.revenue ? ((total / k.revenue) * 100).toFixed(1) + '%' : '—') + '</td></tr>';
     }).join('');
+    var totalCM = k.revenue - k.total_cost;
+    var tiles = multi
+      ? '<div class="kpi"><div class="label">Total Revenue</div><div class="value">' + inr(Math.round(k.revenue)) + '</div><div class="sub">' + (k.units || 0).toLocaleString('en-IN') + ' cans across ' + (d.byPlatform || []).length + ' platforms</div></div>' +
+        '<div class="kpi"><div class="label">Total Cost</div><div class="value">' + inr(Math.round(k.total_cost)) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
+        '<div class="kpi ' + (totalCM >= 0 ? 'ok' : 'err') + '"><div class="label">Total Contribution</div><div class="value">' + inr(Math.round(totalCM)) + '</div><div class="sub">Revenue − Total cost</div></div>'
+      : '<div class="kpi"><div class="label">Revenue / Can</div><div class="value">' + unitEconMoney_(k.revenue / units) + '</div><div class="sub">' + (k.units || 0).toLocaleString('en-IN') + ' cans</div></div>' +
+        '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">' + unitEconMoney_(k.cost_per_unit) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
+        '<div class="kpi ' + (k.cm_per_unit >= 0 ? 'ok' : 'err') + '"><div class="label">CM / Can</div><div class="value">' + unitEconMoney_(k.cm_per_unit) + '</div><div class="sub">Revenue − Total cost</div></div>';
     el.innerHTML =
-      '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Revenue / Can</div><div class="value">\u20B9' + (k.revenue/units).toFixed(2) + '</div><div class="sub">' + k.units + ' cans</div></div>' +
-        '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">\u20B9' + totalCostU.toFixed(2) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
-        '<div class="kpi ' + (cmU >=0 ? 'ok' : 'err') + '"><div class="label">CM / Can</div><div class="value">\u20B9' + cmU.toFixed(2) + '</div><div class="sub">Revenue \u2212 Total cost</div></div>' +
-      '</div>' +
+      '<div class="kpi-grid">' + tiles + '</div>' +
       perPlatformUnitEconPanel_(d) +
-      '<div class="panel"><h2>Cost decomposition (per can)</h2>' +
-      '<table><thead><tr><th>Line</th><th class="num">\u20B9 / can</th><th class="num">% of Revenue</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+      '<div class="panel"><h2>Cost decomposition (' + (multi ? 'total across platforms' : 'per can') + ')</h2>' +
+      (multi ? '<div class="desc">Rupee totals, which do add up across platforms. Per-can figures are in the table above, kept separate per platform.</div>' : '') +
+      '<table><thead><tr><th>Line</th><th class="num">' + (multi ? '₹ total' : '₹ / can') + '</th><th class="num">% of Revenue</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
   });
 }
 
