@@ -905,21 +905,52 @@ function renderSales(el) {
   });
 }
 
-// Per-can figures are volume-weighted AVERAGES across whatever platforms are
-// in scope — they deliberately do NOT add up. With "All platforms" selected,
-// Revenue/can sits between Blinkit's and Swiggy's, pulled toward whichever
-// sold more cans; it is total revenue / total cans, not Blinkit's ₹/can plus
-// Swiggy's. The underlying totals (revenue, cans, fees) DO sum exactly. This
-// note exists because a blended ₹77.12 sitting between ₹74.60 and ₹99.00
-// reads as "the filter isn't adding up" unless the averaging is stated.
-function perCanBlendNote_(k) {
+// A single blended per-can figure is actively misleading when platforms sit
+// on opposite sides of zero: Blinkit loses money per can while Swiggy makes
+// money per can, and total ÷ total collapses that into one number that
+// describes neither. (It is still the arithmetically correct overall margin —
+// total CM ÷ total cans — which is why the tiles keep it, clearly labelled
+// as blended — but it must not be the ONLY thing shown.) So with "All
+// platforms" selected, show each platform's own economics side by side, and
+// the blend as an explicit final row rather than an unexplained average.
+function perPlatformUnitEconPanel_(d) {
   if (state.filter.platformId) return '';
-  return '<div class="panel" style="padding:10px 14px"><div class="muted">' +
-    'Per-can figures below are <b>volume-weighted averages</b> across all platforms ' +
-    '(total \u00F7 ' + (k.units || 0).toLocaleString('en-IN') + ' cans) \u2014 they sit between each ' +
-    'platform\u2019s own per-can numbers rather than adding together. Pick a single platform ' +
-    'above to see its figures on their own.' +
-    '</div></div>';
+  var bp = (d.byPlatform || []).filter(function(p) { return (p.units || 0) > 0; });
+  if (bp.length < 2) return '';
+  var k = d.kpis, u = k.units || 1;
+  function money(v) { return '₹' + (v || 0).toFixed(2); }
+  function cmCell(v) {
+    var cls = v >= 0 ? 'pill-ok' : 'pill-err';
+    return '<td class="num"><span class="pill ' + cls + '">' + money(v) + '</span></td>';
+  }
+  var rows = bp.map(function(p) {
+    return '<tr><td><b>' + escapeHtml(p.platform_name) + '</b></td>' +
+      '<td class="num">' + (p.units || 0).toLocaleString('en-IN') + '</td>' +
+      '<td class="num">' + money(p.revenue_per_unit) + '</td>' +
+      '<td class="num">' + money(p.cogs_per_unit) + '</td>' +
+      '<td class="num">' + money(p.ad_per_unit) + '</td>' +
+      '<td class="num">' + money(p.platform_per_unit) + '</td>' +
+      '<td class="num"><b>' + money(p.cost_per_unit) + '</b></td>' +
+      cmCell(p.cm_per_unit) + '</tr>';
+  }).join('');
+  var blended = '<tr style="border-top:2px solid var(--nh-gray-line)">' +
+    '<td><b>Blended (all platforms)</b></td>' +
+    '<td class="num"><b>' + (k.units || 0).toLocaleString('en-IN') + '</b></td>' +
+    '<td class="num">' + money(k.revenue / u) + '</td>' +
+    '<td class="num">' + money(k.cogs / u) + '</td>' +
+    '<td class="num">' + money(k.ad_spend / u) + '</td>' +
+    '<td class="num">' + money(k.platform_per_unit) + '</td>' +
+    '<td class="num"><b>' + money(k.cost_per_unit) + '</b></td>' +
+    cmCell(k.cm_per_unit) + '</tr>';
+  return '<div class="panel"><h2>Per-can economics by platform</h2>' +
+    '<div class="desc">Each platform earns and costs a different amount per can, so a single ' +
+    'blended figure can hide that one platform is profitable while another loses money. ' +
+    'The blended row is total ÷ total cans — a volume-weighted result, not the two rows added ' +
+    'together — so it always lands between them, nearer whichever platform sold more.</div>' +
+    '<table><thead><tr><th>Platform</th><th class="num">Cans</th><th class="num">Revenue</th>' +
+    '<th class="num">COGS</th><th class="num">Ads</th><th class="num">Platform fees</th>' +
+    '<th class="num">Total cost</th><th class="num">CM / can</th></tr></thead>' +
+    '<tbody>' + rows + blended + '</tbody></table></div>';
 }
 function renderUnitEcon(el) {
   setLoading(el);
@@ -950,12 +981,12 @@ function renderUnitEcon(el) {
              '<td class="num">' + (k.revenue ? ((v*units/k.revenue)*100).toFixed(1)+'%' : '\u2014') + '</td></tr>';
     }).join('');
     el.innerHTML =
-      perCanBlendNote_(k) +
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Revenue / Can</div><div class="value">\u20B9' + (k.revenue/units).toFixed(2) + '</div><div class="sub">' + k.units + ' cans</div></div>' +
         '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">\u20B9' + totalCostU.toFixed(2) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
         '<div class="kpi ' + (cmU >=0 ? 'ok' : 'err') + '"><div class="label">CM / Can</div><div class="value">\u20B9' + cmU.toFixed(2) + '</div><div class="sub">Revenue \u2212 Total cost</div></div>' +
       '</div>' +
+      perPlatformUnitEconPanel_(d) +
       '<div class="panel"><h2>Cost decomposition (per can)</h2>' +
       '<table><thead><tr><th>Line</th><th class="num">\u20B9 / can</th><th class="num">% of Revenue</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
   });
