@@ -629,7 +629,7 @@ function switchView(v) {
   $('platform-sel').classList.toggle('hidden', !PLATFORM_FILTER_VIEWS_[v]);
   // ...and in its place, a fixed "Blinkit" label so these views still state
   // whose data they're showing rather than showing no platform context at all.
-  $('platform-static').classList.toggle('hidden', !!PLATFORM_FILTER_VIEWS_[v]);
+  $('platform-static').classList.toggle('hidden', !!PLATFORM_FILTER_VIEWS_[v] || !!NO_PLATFORM_LABEL_VIEWS_[v]);
   var isMkt = v.indexOf('mkt-') === 0;
   ['brief','ai','dashboard','sales','unit-econ','ads','inventory','complaints','expansion','budget','cash','forecast','scenarios','decisions','issues','import','master'].forEach(function(id) {
     $('view-' + id).classList.toggle('hidden', id !== v);
@@ -638,6 +638,12 @@ function switchView(v) {
   loadView(v);
 }
 var PLATFORM_FILTER_VIEWS_ = { brief:1, dashboard:1, sales:1, 'unit-econ':1, ads:1, inventory:1 };
+// AI chat views (and the access-code gate that fronts Ask Strategist) answer
+// questions across whatever data the question happens to touch — they aren't
+// scoped to a platform at all, so they show neither the dropdown NOR the
+// fixed "Blinkit" label. Showing either would assert a scope the view
+// doesn't actually have.
+var NO_PLATFORM_LABEL_VIEWS_ = { ai:1, 'mkt-ai':1, 'mkt-ai-strategy':1 };
 function reloadCurrentView() { loadView(currentView); }
 
 function loadView(v) {
