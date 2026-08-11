@@ -974,10 +974,16 @@ function renderUnitEcon(el) {
              '<td class="num">' + (k.revenue ? ((total / k.revenue) * 100).toFixed(1) + '%' : '—') + '</td></tr>';
     }).join('');
     var totalCM = k.revenue - k.total_cost;
+    // Across all platforms the headline is rupee totals (which genuinely sum),
+    // with the per-can rate underneath each. That rate is total ÷ total cans —
+    // a real ratio of two real sums, NOT the arithmetic mean of the two
+    // platforms' rates (which would be meaningless: mean of ₹138.39 and
+    // ₹50.17 is ₹94.28, a number no can ever cost). The per-platform table
+    // below carries each platform's own rate so the spread stays visible.
     var tiles = multi
-      ? '<div class="kpi"><div class="label">Total Revenue</div><div class="value">' + inr(Math.round(k.revenue)) + '</div><div class="sub">' + (k.units || 0).toLocaleString('en-IN') + ' cans across ' + (d.byPlatform || []).length + ' platforms</div></div>' +
-        '<div class="kpi"><div class="label">Total Cost</div><div class="value">' + inr(Math.round(k.total_cost)) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
-        '<div class="kpi ' + (totalCM >= 0 ? 'ok' : 'err') + '"><div class="label">Total Contribution</div><div class="value">' + inr(Math.round(totalCM)) + '</div><div class="sub">Revenue − Total cost</div></div>'
+      ? '<div class="kpi"><div class="label">Total Revenue</div><div class="value">' + inr(Math.round(k.revenue)) + '</div><div class="sub">' + unitEconMoney_(k.revenue / units) + ' / can · ' + (k.units || 0).toLocaleString('en-IN') + ' cans across ' + (d.byPlatform || []).length + ' platforms</div></div>' +
+        '<div class="kpi"><div class="label">Total Cost</div><div class="value">' + inr(Math.round(k.total_cost)) + '</div><div class="sub">' + unitEconMoney_(k.total_cost / units) + ' / can · COGS + Ads + Platform fees</div></div>' +
+        '<div class="kpi ' + (totalCM >= 0 ? 'ok' : 'err') + '"><div class="label">Total Contribution</div><div class="value">' + inr(Math.round(totalCM)) + '</div><div class="sub">' + unitEconMoney_(totalCM / units) + ' / can · Revenue − Total cost</div></div>'
       : '<div class="kpi"><div class="label">Revenue / Can</div><div class="value">' + unitEconMoney_(k.revenue / units) + '</div><div class="sub">' + (k.units || 0).toLocaleString('en-IN') + ' cans</div></div>' +
         '<div class="kpi"><div class="label">Total Cost / Can</div><div class="value">' + unitEconMoney_(k.cost_per_unit) + '</div><div class="sub">COGS + Ads + Platform fees</div></div>' +
         '<div class="kpi ' + (k.cm_per_unit >= 0 ? 'ok' : 'err') + '"><div class="label">CM / Can</div><div class="value">' + unitEconMoney_(k.cm_per_unit) + '</div><div class="sub">Revenue − Total cost</div></div>';
