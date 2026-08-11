@@ -534,10 +534,25 @@ function init() {
 
     var sel = $('platform-sel');
     var opts = ['<option value="">All platforms</option>'];
-    (boot.platforms || []).filter(function(p) { return p.status === 'active'; }).forEach(function(p) {
+    var activePlatforms = (boot.platforms || []).filter(function(p) { return p.status === 'active'; });
+    activePlatforms.forEach(function(p) {
       opts.push('<option value="' + escapeHtml(p.platform_id) + '">' + escapeHtml(p.name) + '</option>');
     });
     sel.innerHTML = opts.join('');
+
+    // Default to Blinkit, not "All platforms": platforms report on
+    // different cadences (Swiggy Instamart's newest date can lag a day or
+    // more behind Blinkit's), so "All platforms" totals for "today"/
+    // "yesterday" naturally collapse to whichever platform HAS reported for
+    // that date — looking exactly like the other platform's numbers aren't
+    // being added in, even though every view that sums a date RANGE (not a
+    // single latest day) already adds both platforms correctly. Blinkit is
+    // the primary, complete channel, so land there by default and let
+    // people opt into "All platforms" deliberately, understanding the
+    // lag-driven quirk on single-day comparisons.
+    var blinkitPlatform = activePlatforms.filter(function(p) { return /blinkit/i.test(p.name || ''); })[0];
+    state.filter.platformId = blinkitPlatform ? blinkitPlatform.platform_id : '';
+    sel.value = state.filter.platformId;
 
     // Default filter: always the current calendar month (1st of this month
     // through today), recomputed fresh on every load — not a fixed lookback
