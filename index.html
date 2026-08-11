@@ -133,6 +133,14 @@
   tbody tr:hover { background: #F5F8FF; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .pill { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.1px; }
+  /* Fixed scope label shown in place of the platform dropdown on views that
+     aren't platform-filterable. Deliberately flat (no border/caret/pointer)
+     so it never reads as a control that can be changed. */
+  .platform-static { display:inline-flex; align-items:center; gap:6px; padding:7px 12px;
+    border-radius:8px; background:var(--nh-gray-bg); color:var(--nh-navy);
+    font-size:13px; font-weight:600; border:1px solid var(--nh-gray-line); }
+  .platform-static::before { content:''; width:7px; height:7px; border-radius:50%;
+    background:var(--nh-yellow, #F6C744); display:inline-block; }
   .pill-ok { background: #E4F6EE; color: var(--nh-ok); }
   .pill-warn { background: #FCF1D9; color: var(--nh-warn); }
   .pill-err { background: #FCE3E9; color: var(--nh-err); }
@@ -285,6 +293,7 @@
         <input type="date" id="date-from">
         <input type="date" id="date-to">
         <select id="platform-sel"></select>
+        <span id="platform-static" class="platform-static hidden">Blinkit</span>
         <button id="apply-filters">Apply</button>
         <button class="secondary" id="refresh-btn">&#8635; Refresh</button>
       </div>
@@ -618,6 +627,9 @@ function switchView(v) {
   // "why is Swiggy identical to Blinkit?". Hide it outright on those views
   // instead of rendering a control that silently does nothing.
   $('platform-sel').classList.toggle('hidden', !PLATFORM_FILTER_VIEWS_[v]);
+  // ...and in its place, a fixed "Blinkit" label so these views still state
+  // whose data they're showing rather than showing no platform context at all.
+  $('platform-static').classList.toggle('hidden', !!PLATFORM_FILTER_VIEWS_[v]);
   var isMkt = v.indexOf('mkt-') === 0;
   ['brief','ai','dashboard','sales','unit-econ','ads','inventory','complaints','expansion','budget','cash','forecast','scenarios','decisions','issues','import','master'].forEach(function(id) {
     $('view-' + id).classList.toggle('hidden', id !== v);
