@@ -943,9 +943,12 @@ function perPlatformUnitEconPanel_(d) {
     '<b>not combined into one</b> — each platform earns and costs a different amount per can, ' +
     'and one is profitable while the other is not, so a single merged per-can number would be ' +
     'meaningless. Select a platform in the top bar to drill into just that one.</div>' +
-    '<table><thead><tr><th>Platform</th><th class="num">Cans</th><th class="num">Revenue</th>' +
-    '<th class="num">COGS</th><th class="num">Ads</th><th class="num">Platform fees</th>' +
-    '<th class="num">Total cost</th><th class="num">CM / can</th></tr></thead>' +
+    // Every money column here is per-can, not a total — the panel title said so
+    // but the headers didn't, so "Total cost ₹138.39" against 247 cans read as
+    // ambiguous (or as an absurd grand total). Spell out "/ can" on each.
+    '<table><thead><tr><th>Platform</th><th class="num">Cans</th><th class="num">Revenue / can</th>' +
+    '<th class="num">COGS / can</th><th class="num">Ads / can</th><th class="num">Platform fees / can</th>' +
+    '<th class="num">Total cost / can</th><th class="num">CM / can</th></tr></thead>' +
     '<tbody>' + rows + '</tbody></table></div>';
 }
 function renderUnitEcon(el) {
