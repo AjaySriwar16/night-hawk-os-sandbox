@@ -2299,7 +2299,7 @@ function renderAI(el) {
 
 function renderBrief(el) {
   setLoading(el);
-  return api('dailyBrief').then(function(d) {
+  return api('dailyBrief', { platformId: state.filter.platformId }).then(function(d) {
     var staleBadge = d.is_stale
       ? '<span class="pill pill-warn" style="margin-left:10px">Latest data: ' + escapeHtml(d.latest_date) + ' (not today)</span>'
       : '<span class="pill pill-ok" style="margin-left:10px">Fresh \u2014 ' + escapeHtml(d.latest_date) + '</span>';
@@ -2475,9 +2475,9 @@ function renderBrief(el) {
       staleBadge + '</div>' +
       '<div class="kpi-grid brief-kpi-grid">' +
         '<div class="kpi"><div class="label">Cans sold</div><div class="value">' + s.units + '</div>' +
-          '<div class="sub">' + deltaPill(d.sales.delta_units) + ' vs prev. Week avg ' + w.avg_units + '/d</div></div>' +
+          '<div class="sub">' + deltaPill(d.sales.delta_units) + ' vs prev. day &middot; Week avg ' + w.avg_units + '/d</div></div>' +
         '<div class="kpi"><div class="label">Revenue</div><div class="value">' + inr(s.revenue) + '</div>' +
-          '<div class="sub">' + deltaPill(Math.round(d.sales.delta_revenue)) + ' vs prev. Week ' + inr(w.revenue) + '</div></div>' +
+          '<div class="sub">' + deltaPill(Math.round(d.sales.delta_revenue)) + ' vs prev. day &middot; Week avg ' + inr(w.avg_revenue) + '/d</div></div>' +
         '<div class="kpi"><div class="label">Ad spend</div><div class="value">' + inr(d.ad_spend.latest) + '</div>' +
           '<div class="sub">' + deltaPill(Math.round(d.ad_spend.delta), true) + ' vs prev</div></div>' +
         '<div class="kpi ' + (d.stockouts.length ? 'err' : 'ok') + '"><div class="label">SKUs low on stock</div><div class="value">' + (function() { var s = {}; d.stockouts.forEach(function(r) { s[r.sku_id] = 1; }); return Object.keys(s).length; })() + '</div>' +
