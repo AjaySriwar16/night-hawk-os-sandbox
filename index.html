@@ -609,6 +609,15 @@ function switchView(v) {
     'mkt-alerts': 'Live Marketing Alerts', 'mkt-ai-strategy': 'AI Marketing Strategy',
   };
   $('view-title').innerText = titles[v] || v;
+  // The platform dropdown only applies to views whose underlying data is
+  // actually tracked per platform (daily_sales / daily_ad_spend / daily_fees).
+  // Everything from Inventory downwards — and every Digital Marketing view —
+  // is either company-wide by design (expansion_plan, monthly_budget,
+  // monthly_forecast, cash_ledger have no platform_id column at all) or not
+  // meaningfully split by platform, so showing a filter there just invites
+  // "why is Swiggy identical to Blinkit?". Hide it outright on those views
+  // instead of rendering a control that silently does nothing.
+  $('platform-sel').classList.toggle('hidden', !PLATFORM_FILTER_VIEWS_[v]);
   var isMkt = v.indexOf('mkt-') === 0;
   ['brief','ai','dashboard','sales','unit-econ','ads','inventory','complaints','expansion','budget','cash','forecast','scenarios','decisions','issues','import','master'].forEach(function(id) {
     $('view-' + id).classList.toggle('hidden', id !== v);
@@ -616,6 +625,7 @@ function switchView(v) {
   $('view-marketing').classList.toggle('hidden', !isMkt);
   loadView(v);
 }
+var PLATFORM_FILTER_VIEWS_ = { brief:1, dashboard:1, sales:1, 'unit-econ':1, ads:1 };
 function reloadCurrentView() { loadView(currentView); }
 
 function loadView(v) {
@@ -1180,7 +1190,7 @@ function renderInventoryUploadPanel_(el) {
 
 function renderInventory(el) {
   setLoading(el);
-  return api('inventory', { platformId: state.filter.platformId }).then(function(d) {
+  return api('inventory', {}).then(function(d) {
     if (!d.rows || !d.rows.length) {
       // Bug fix: this used to fetch unfiltered inventory regardless of the
       // platform dropdown, so switching to Swiggy Instamart silently kept
@@ -1280,7 +1290,7 @@ function renderInventory(el) {
 
 function renderComplaints(el) {
   setLoading(el);
-  return api('complaints', { from: state.filter.from, to: state.filter.to, platformId: state.filter.platformId }).then(function(d) {
+  return api('complaints', { from: state.filter.from, to: state.filter.to }).then(function(d) {
     // Nothing logged for this platform in this range — say so plainly
     // instead of rendering two empty tables with just headers, which reads
     // as a broken view rather than "genuinely no complaints/returns here".
@@ -1410,7 +1420,6 @@ function renderExpansion(el) {
     function money(n) { return n == null ? '<span class="muted">—</span>' : inr(n); }
 
     el.innerHTML =
-      companyWideNotice_() +
       '<div class="panel">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
         '<h2 style="margin:0">Expansion &amp; Experiments</h2>' +
@@ -1584,7 +1593,6 @@ function renderBudget(el) {
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
   })();
   el.innerHTML =
-    companyWideNotice_() +
     '<div class="panel"><h2>Budget vs. Actuals</h2>' +
     '<div class="desc">Track budgeted vs. actual spend for each line. Actuals are matched by keyword to daily ads, storage, shipping and commission rows. Lines without a matchable actual source show "\u2014".</div>' +
     '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">' +
@@ -1762,7 +1770,6 @@ function renderForecast(el) {
       : '<div class="muted">No past forecast rows yet.</div>';
 
     el.innerHTML =
-      companyWideNotice_() +
       '<div class="panel">' +
         '<div style="font-size:38px;font-weight:800;color:var(--nh-navy);letter-spacing:-0.5px;line-height:1.15">' +
           escapeHtml(curMonthLabel) +
@@ -2682,7 +2689,7 @@ function renderCash(el) {
       ) : '<div class="muted">No entries yet. Click "+ Add entry" to record your opening balance.</div>') +
     '</div>';
 
-    el.innerHTML = companyWideNotice_() + html;
+    el.innerHTML = html;
 
     $('add-cash-btn').addEventListener('click', function() {
       var today = (new Date()).toISOString().slice(0,10);
@@ -4304,21 +4311,6 @@ function mktCityOptions_() { return (state.boot.cities || []).map(function(c) { 
 function mktCampaignOptions_(rows) { return (rows || []).map(function(c) { return { value: c.campaign_id, label: c.name + ' (' + c.campaign_id + ')' }; }); }
 function mktSkuName_(id) { var s = (state.boot.skus||[]).filter(function(x){return x.sku_id===id;})[0]; return s ? s.name : (id || '—'); }
 function mktPlatformName_(id) { var p = (state.boot.platforms||[]).filter(function(x){return x.platform_id===id;})[0]; return p ? p.name : (id || '—'); }
-// Banner for views whose underlying tabs (expansion_plan, monthly_budget,
-// monthly_forecast, cash_ledger) have NO platform_id column at all — they're
-// company-wide by design, not per-platform. Without this, selecting "Swiggy
-// Instamart" and seeing identical numbers to Blinkit looks exactly like the
-// platform-filter bugs that DID exist elsewhere (Sales/Ad Spend/Inventory/
-// Complaints/Daily Brief), so say plainly that the filter doesn't apply here
-// rather than leaving the user to guess whether it's broken.
-function companyWideNotice_() {
-  if (!state.filter.platformId) return '';
-  return '<div class="panel" style="padding:10px 14px"><div class="muted">' +
-    'Showing <b>company-wide</b> figures across all platforms — the ' +
-    escapeHtml(mktPlatformName_(state.filter.platformId)) +
-    ' filter doesn’t apply to this view, because this data isn’t tracked per platform.' +
-    '</div></div>';
-}
 function mktScorePill_(score) {
   var n = Number(score) || 0;
   var cls = n >= 80 ? 'pill-ok' : (n >= 50 ? 'pill-warn' : 'pill-err');
@@ -4665,7 +4657,7 @@ function renderMktBudget(el) {
 function renderMktInventory(el) {
   setLoading(el);
   return Promise.all([
-    api('inventory', { platformId: state.filter.platformId }),
+    api('inventory', {}),
     api('campaigns').catch(function(){ return { rows: [] }; }),
   ]).then(function(results) {
     var inv = results[0]; var camp = results[1].rows || [];
@@ -4787,7 +4779,7 @@ function renderMktAlerts(el) {
   return Promise.all([
     api('campaigns').catch(function(){ return { rows: [] }; }),
     api('listingHealth').catch(function(){ return { rows: [] }; }),
-    api('inventory', { platformId: state.filter.platformId }).catch(function(){ return { rows: [] }; }),
+    api('inventory', {}).catch(function(){ return { rows: [] }; }),
     api('dashboard', state.filter).catch(function(){ return null; }),
   ]).then(function(results) {
     var camp = results[0].rows || [];
