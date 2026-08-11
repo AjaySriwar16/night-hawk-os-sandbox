@@ -925,6 +925,15 @@ function renderUnitEcon(el) {
 function renderAds(el) {
   setLoading(el);
   return api('adspend', state.filter).then(function(d) {
+    // No real daily_ad_spend rows for the selected platform (e.g. Swiggy
+    // Instamart, which has never had an ad spend file imported) \u2014 show that
+    // plainly instead of a flat, all-zero chart that looks like a bug.
+    if (!d.has_ad_spend_data) {
+      var platName = (state.filter.platformId ? mktPlatformName_(state.filter.platformId) : 'the selected platform(s)');
+      el.innerHTML = '<div class="panel"><div class="muted">No ad spend data available for ' + escapeHtml(platName) + ' in this date range.</div></div>';
+      destroyChart('chart-ads');
+      return;
+    }
     var rowsHtml = d.rows.map(function(r) {
       return '<tr><td>' + escapeHtml(r.date) + '</td><td class="num">' + inr(r.ad_spend) + '</td><td class="num">' + inr(r.revenue) + '</td><td class="num">' + r.roas + 'x</td></tr>';
     }).join('');
