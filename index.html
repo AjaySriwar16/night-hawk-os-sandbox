@@ -1180,9 +1180,19 @@ function renderInventoryUploadPanel_(el) {
 
 function renderInventory(el) {
   setLoading(el);
-  return api('inventory').then(function(d) {
+  return api('inventory', { platformId: state.filter.platformId }).then(function(d) {
     if (!d.rows || !d.rows.length) {
-      el.innerHTML = '<div class="panel"><h2>Inventory</h2><div class="muted">No inventory snapshots in the DB yet.</div></div>';
+      // Bug fix: this used to fetch unfiltered inventory regardless of the
+      // platform dropdown, so switching to Swiggy Instamart silently kept
+      // showing Blinkit's stock. Swiggy has no warehouses registered yet
+      // (no stock file has ever been imported for it), so it correctly
+      // shows empty now — say so explicitly instead of the generic
+      // "no data in the DB" message, which reads like the whole app has no
+      // inventory data at all.
+      var msg = (state.filter.platformId && d.has_data === false)
+        ? 'No inventory data available for ' + escapeHtml(mktPlatformName_(state.filter.platformId)) + ' — no warehouses have been registered for this platform yet.'
+        : 'No inventory snapshots in the DB yet.';
+      el.innerHTML = '<div class="panel"><h2>Inventory</h2><div class="muted">' + msg + '</div></div>';
       renderInventoryUploadPanel_(el);
       return;
     }
@@ -1270,7 +1280,7 @@ function renderInventory(el) {
 
 function renderComplaints(el) {
   setLoading(el);
-  return api('complaints', { from: state.filter.from, to: state.filter.to }).then(function(d) {
+  return api('complaints', { from: state.filter.from, to: state.filter.to, platformId: state.filter.platformId }).then(function(d) {
     var summary = d.bySku.map(function(s) {
       var flag = s.complaint_pct > 5 ? 'pill-err' : (s.complaint_pct > 2 ? 'pill-warn' : 'pill-ok');
       return '<tr><td>' + escapeHtml(s.sku || s.sku_id) + '</td>' +
@@ -2372,10 +2382,19 @@ function renderBrief(el) {
         '<style>' +
         '.nh-brief-panel { border:1px solid var(--nh-gray-line); border-radius:10px; padding:16px 18px; margin-bottom:16px; background:linear-gradient(180deg,#F6F9FC 0%,#FFFFFF 100%); }' +
         '.nh-brief-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; flex-wrap:wrap; }' +
-        '.nh-brief-title { display:flex; align-items:center; gap:8px; color:var(--nh-navy); font-weight:700; font-size:14px; }' +
-        '.nh-brief-title .nh-brief-bolt { width:22px; height:22px; border-radius:50%; background:var(--nh-navy); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-size:12px; }' +
-        '.nh-brief-actions { display:flex; gap:8px; }' +
-        '.nh-brief-btn { padding:6px 12px; border:1px solid var(--nh-gray-line); background:#fff; color:var(--nh-navy); border-radius:6px; font-size:12px; cursor:pointer; }' +
+        '.nh-brief-title { display:flex; align-items:center; gap:8px; color:var(--nh-navy); font-weight:700; font-size:14px; min-width:0; flex:1 1 auto; }' +
+        '.nh-brief-title .nh-brief-bolt { width:22px; height:22px; border-radius:50%; background:var(--nh-navy); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-size:12px; flex-shrink:0; }' +
+        // flex-shrink:0 on both the actions row and each button — without
+        // it, a narrow window could shrink the button below its text's
+        // content width (the row above only wraps AS A WHOLE via
+        // flex-wrap, it doesn't protect an individual child from being
+        // squeezed), wrapping "Generate now" onto a second line that the
+        // button's fixed single-line height then clips off. white-space:
+        // nowrap is the actual fix (never let the label wrap); flex-shrink:
+        // 0 keeps the button itself from being squeezed narrower than that
+        // label in the first place.
+        '.nh-brief-actions { display:flex; gap:8px; flex-shrink:0; }' +
+        '.nh-brief-btn { padding:6px 12px; border:1px solid var(--nh-gray-line); background:#fff; color:var(--nh-navy); border-radius:6px; font-size:12px; cursor:pointer; white-space:nowrap; flex-shrink:0; }' +
         '.nh-brief-btn:hover { background:var(--nh-gray-bg); }' +
         '.nh-brief-btn:disabled { opacity:0.6; cursor:wait; }' +
         '.nh-brief-btn-primary { background:var(--nh-navy); color:#fff; border-color:var(--nh-navy); }' +
@@ -4619,7 +4638,7 @@ function renderMktBudget(el) {
 function renderMktInventory(el) {
   setLoading(el);
   return Promise.all([
-    api('inventory'),
+    api('inventory', { platformId: state.filter.platformId }),
     api('campaigns').catch(function(){ return { rows: [] }; }),
   ]).then(function(results) {
     var inv = results[0]; var camp = results[1].rows || [];
@@ -4741,7 +4760,7 @@ function renderMktAlerts(el) {
   return Promise.all([
     api('campaigns').catch(function(){ return { rows: [] }; }),
     api('listingHealth').catch(function(){ return { rows: [] }; }),
-    api('inventory').catch(function(){ return { rows: [] }; }),
+    api('inventory', { platformId: state.filter.platformId }).catch(function(){ return { rows: [] }; }),
     api('dashboard', state.filter).catch(function(){ return null; }),
   ]).then(function(results) {
     var camp = results[0].rows || [];
