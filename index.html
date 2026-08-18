@@ -242,6 +242,7 @@
     </div>
     <ul class="nav" id="nav">
       <li data-view="brief" class="active"><span class="ico">&#9728;</span> Daily Brief</li>
+      <li data-view="recs"><span class="ico">&#9873;</span> Recommendations</li>
       <li data-view="ai"><span class="ico">&#129504;</span> Ask Strategist</li>
       <li data-view="dashboard"><span class="ico">&#9632;</span> Dashboard</li>
       <li data-view="sales"><span class="ico">&#9650;</span> Sales</li>
@@ -300,6 +301,7 @@
     </div>
 
     <section id="view-brief"></section>
+    <section id="view-recs" class="hidden"></section>
     <section id="view-ai" class="hidden"></section>
     <section id="view-dashboard" class="hidden"></section>
     <section id="view-sales" class="hidden"></section>
@@ -602,6 +604,7 @@ function switchView(v) {
   currentView = v;
   var titles = {
     brief: 'Daily Brief',
+    recs: 'Recommendations',
     ai: 'Ask Strategist',
     dashboard: 'Executive Dashboard', sales: 'Sales Analytics', 'unit-econ': 'Unit Economics',
     ads: 'Ad Spend & ROAS', inventory: 'Inventory & Ageing', complaints: 'Complaints & Returns',
@@ -631,7 +634,7 @@ function switchView(v) {
   // whose data they're showing rather than showing no platform context at all.
   $('platform-static').classList.toggle('hidden', !!PLATFORM_FILTER_VIEWS_[v] || !!NO_PLATFORM_LABEL_VIEWS_[v]);
   var isMkt = v.indexOf('mkt-') === 0;
-  ['brief','ai','dashboard','sales','unit-econ','ads','inventory','complaints','expansion','budget','cash','forecast','scenarios','decisions','issues','import','master'].forEach(function(id) {
+  ['brief','recs','ai','dashboard','sales','unit-econ','ads','inventory','complaints','expansion','budget','cash','forecast','scenarios','decisions','issues','import','master'].forEach(function(id) {
     $('view-' + id).classList.toggle('hidden', id !== v);
   });
   $('view-marketing').classList.toggle('hidden', !isMkt);
@@ -653,6 +656,7 @@ function loadView(v) {
   var render;
   switch (v) {
     case 'brief':     render = renderBrief; break;
+    case 'recs':      render = renderRecommendations; break;
     case 'ai':        render = renderAI; break;
     case 'dashboard': render = renderDashboard; break;
     case 'sales':     render = renderSales; break;
@@ -700,10 +704,14 @@ function renderDashboard(el) {
   var currentMonth = (function(){ var x = new Date(); return x.getFullYear() + '-' + String(x.getMonth()+1).padStart(2,'0'); })();
   return Promise.all([
     api('dashboard', state.filter),
-    api('budget', { month: currentMonth }).catch(function(){ return null; })
+    api('budget', { month: currentMonth }).catch(function(){ return null; }),
+    // Health score is deterministic and cheap; failing it must never take the
+    // whole dashboard down, so it degrades to null rather than rejecting.
+    api('healthScore', { days: 30, platformId: state.filter.platformId }).catch(function(){ return null; })
   ]).then(function(results) {
     var d = results[0];
     var b = results[1];
+    var health = results[2];
     var k = d.kpis;
     var cmClass = k.cash_contribution >= 0 ? 'ok' : 'err';
     var cmUnitClass = (k.cm_per_unit >= 0) ? 'ok' : ((k.cm_per_unit >= -20) ? 'warn' : 'err');
@@ -738,6 +746,7 @@ function renderDashboard(el) {
       : '<div class="muted">No sales in this date range.</div>';
 
     el.innerHTML =
+      healthScoreHtml_(health) +
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Revenue</div><div class="value">' + inr(k.revenue) + '</div><div class="sub">' + d.range.from + ' &rarr; ' + d.range.to + '</div></div>' +
         '<div class="kpi"><div class="label">Cases Sold</div><div class="value">' + (k.cases||0).toLocaleString('en-IN') + '</div><div class="sub">\u2248 ' + (k.units||0).toLocaleString('en-IN') + ' cans (24 cans/case) \u00B7 Avg \u20B9' + k.avg_price_per_unit + '/can</div></div>' +
@@ -4470,6 +4479,208 @@ function mktFormHtml_(cfg) {
       '<button id="mktf-save">Create</button>' +
     '</div>';
 }
+// ---------- Recommendations: the decision queue ----------
+// This is the view that makes the app feel like a manager rather than a
+// dashboard: a ranked list of things that need deciding, each carrying the
+// evidence it was derived from, and each requiring a human verdict.
+//
+// Everything shown here is produced by the deterministic rules engine, so
+// opening this page and regenerating the queue costs nothing. The AI is only
+// involved if the user explicitly asks for a narrative on one item.
+function recSeverityPill_(sev) {
+  var cls = sev === 'critical' ? 'pill-err'
+          : sev === 'warning' ? 'pill-warn'
+          : sev === 'opportunity' ? 'pill-ok' : 'pill-info';
+  return '<span class="pill ' + cls + '">' + escapeHtml(sev || 'info') + '</span>';
+}
+
+// Evidence is rendered as a plain key/value grid rather than raw JSON: the
+// point is that a human can check the arithmetic, so it has to be legible.
+function recEvidenceHtml_(ev) {
+  if (!ev || typeof ev !== 'object') return '';
+  var rows = [];
+  Object.keys(ev).forEach(function(k) {
+    var v = ev[k];
+    if (v === null || v === undefined || v === '') return;
+    if (typeof v === 'object') {
+      Object.keys(v).forEach(function(k2) {
+        rows.push([k + ' · ' + k2, v[k2]]);
+      });
+    } else {
+      rows.push([k, v]);
+    }
+  });
+  if (!rows.length) return '';
+  return '<div style="margin-top:8px;background:var(--nh-gray-bg);border-radius:6px;padding:8px 10px">' +
+    '<div style="font-size:11px;font-weight:700;color:var(--nh-gray-text);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">Evidence</div>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:3px 14px;font-size:12px">' +
+    rows.map(function(r) {
+      var label = String(r[0]).replace(/_/g, ' ');
+      var val = typeof r[1] === 'number' ? (Math.round(r[1]*100)/100).toLocaleString('en-IN') : escapeHtml(String(r[1]));
+      return '<div><span class="muted">' + escapeHtml(label) + ':</span> <b>' + val + '</b></div>';
+    }).join('') +
+    '</div></div>';
+}
+
+function recCardHtml_(r) {
+  var blocked = String(r.blocked_by_guardrail || '') === 'yes';
+  var borderCol = r.severity === 'critical' ? 'var(--nh-err)'
+                : r.severity === 'warning' ? '#F6C744'
+                : r.severity === 'opportunity' ? 'var(--nh-ok)' : 'var(--nh-gray-line)';
+  return '<div class="panel" data-rec="' + escapeHtml(r.rec_id) + '" style="border-left:4px solid ' + borderCol + '">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
+      '<div style="flex:1 1 340px;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px">' +
+          recSeverityPill_(r.severity) +
+          '<span class="pill pill-info" title="Opportunity score — severity, confidence and money at stake">score ' + (Math.round(+r.score||0)) + '</span>' +
+          '<span class="muted" style="font-size:11px">' + escapeHtml(String(r.rec_type||'').replace(/_/g,' ')) + '</span>' +
+          (blocked ? '<span class="pill pill-err">blocked by margin guardrail</span>' : '') +
+        '</div>' +
+        '<div style="font-size:15px;font-weight:700;color:var(--nh-navy)">' + escapeHtml(r.title || '') + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-shrink:0">' +
+        '<button class="rec-approve" data-id="' + escapeHtml(r.rec_id) + '" style="padding:7px 13px;border:0;background:var(--nh-navy);color:#fff;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Approve</button>' +
+        '<button class="rec-reject" data-id="' + escapeHtml(r.rec_id) + '" style="padding:7px 13px;border:1px solid var(--nh-gray-line);background:#fff;color:var(--nh-err);border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap">Reject</button>' +
+      '</div>' +
+    '</div>' +
+    '<div style="font-size:13px;line-height:1.55;margin-top:8px">' + escapeHtml(r.reason || '') + '</div>' +
+    (r.expected_impact ? '<div style="font-size:13px;margin-top:6px"><b>Expected impact:</b> ' + escapeHtml(r.expected_impact) + '</div>' : '') +
+    (r.recommended_action ? '<div style="font-size:13px;margin-top:4px"><b>Action:</b> ' + escapeHtml(r.recommended_action) + '</div>' : '') +
+    (r.risk ? '<div style="font-size:12px;margin-top:6px;color:' + (blocked ? 'var(--nh-err)' : 'var(--nh-gray-text)') + '"><b>Risk:</b> ' + escapeHtml(r.risk) + '</div>' : '') +
+    recEvidenceHtml_(r.evidence) +
+    '<div class="muted" style="font-size:11px;margin-top:8px">' +
+      'Generated ' + escapeHtml(r.created_at || '') + ' by ' + escapeHtml(r.generated_by || 'rules') +
+      ' · confidence ' + Math.round((+r.confidence||0)*100) + '%' +
+    '</div>' +
+    '<div class="rec-result" style="margin-top:8px"></div>' +
+  '</div>';
+}
+
+function renderRecommendations(el) {
+  setLoading(el);
+  return api('recommendations', { status: 'proposed' }).then(function(d) {
+    if (d.missing_tab) {
+      el.innerHTML = '<div class="panel"><h2>Recommendations</h2>' +
+        '<div class="alert medium"><div class="sev">Setup</div><div class="msg"><b>recommendations tab not found</b>' +
+        'Open your Google Sheet, then Night Hawk OS menu → "Create missing tabs (upgrade)".</div></div></div>';
+      return;
+    }
+    var rows = d.rows || [];
+    var counts = { critical:0, warning:0, opportunity:0, info:0 };
+    rows.forEach(function(r){ counts[r.severity] = (counts[r.severity]||0)+1; });
+
+    var header =
+      '<div class="panel">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+          '<div>' +
+            '<h2 style="margin:0">Decision queue</h2>' +
+            '<div class="desc" style="margin:4px 0 0">Ranked by severity, confidence and money at stake. ' +
+            'All findings are computed from your real data by deterministic rules — generating this queue costs nothing.</div>' +
+          '</div>' +
+          '<button id="rec-regen" style="padding:9px 16px;border:0;background:var(--nh-navy);color:#fff;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">↻ Re-run analysis</button>' +
+        '</div>' +
+        '<div class="kpi-grid" style="margin-top:12px">' +
+          '<div class="kpi ' + (counts.critical ? 'err' : 'ok') + '"><div class="label">Critical</div><div class="value">' + counts.critical + '</div><div class="sub">needs action now</div></div>' +
+          '<div class="kpi"><div class="label">Warnings</div><div class="value">' + counts.warning + '</div><div class="sub">watch closely</div></div>' +
+          '<div class="kpi ok"><div class="label">Opportunities</div><div class="value">' + counts.opportunity + '</div><div class="sub">upside available</div></div>' +
+        '</div>' +
+      '</div>';
+
+    if (!rows.length) {
+      el.innerHTML = header +
+        '<div class="panel"><div class="muted">No open recommendations. Click <b>Re-run analysis</b> to scan your current data.</div></div>';
+      wireRecActions_(el);
+      return;
+    }
+
+    el.innerHTML = header + rows.map(recCardHtml_).join('');
+    wireRecActions_(el);
+  });
+}
+
+function wireRecActions_(el) {
+  var regen = el.querySelector('#rec-regen');
+  if (regen) {
+    regen.addEventListener('click', function() {
+      regen.disabled = true; regen.textContent = 'Analysing…';
+      api('generateRecommendations', { days: 30 }, 'POST').then(function(r) {
+        if (r && r.ok === false) {
+          alert('Failed: ' + (r.error || 'unknown'));
+          regen.disabled = false; regen.textContent = '↻ Re-run analysis';
+          return;
+        }
+        reloadCurrentView();
+      }).catch(function(e) {
+        regen.disabled = false; regen.textContent = '↻ Re-run analysis';
+        alert('Failed: ' + (e.message || e));
+      });
+    });
+  }
+
+  function decide(btn, decision) {
+    var id = btn.getAttribute('data-id');
+    var card = el.querySelector('[data-rec="' + id + '"]');
+    var note = '';
+    if (decision === 'rejected') {
+      note = prompt('Why are you rejecting this? (recorded in the audit trail)') || '';
+    }
+    var out = card ? card.querySelector('.rec-result') : null;
+    btn.disabled = true; btn.textContent = decision === 'approved' ? 'Approving…' : 'Rejecting…';
+    api('decideRecommendation', { rec_id: id, decision: decision, note: note }, 'POST').then(function(r) {
+      if (r && r.ok === false) throw new Error(r.error || 'failed');
+      if (out) {
+        out.innerHTML = '<div class="alert ' + (decision === 'approved' ? 'low' : 'medium') + '" style="margin:0">' +
+          '<div class="sev">' + (decision === 'approved' ? 'Approved' : 'Rejected') + '</div>' +
+          '<div class="msg">Recorded in the audit trail' +
+          (decision === 'approved'
+            ? '. Next step is yours: enter this in the platform\'s own Ads Manager — the app does not spend money on your behalf.'
+            : '.') +
+          '</div></div>';
+      }
+      if (card) { card.style.opacity = '0.6'; }
+      Array.prototype.forEach.call(card ? card.querySelectorAll('button') : [], function(b){ b.disabled = true; });
+    }).catch(function(e) {
+      btn.disabled = false; btn.textContent = decision === 'approved' ? 'Approve' : 'Reject';
+      alert('Failed: ' + (e.message || e));
+    });
+  }
+
+  Array.prototype.forEach.call(el.querySelectorAll('.rec-approve'), function(b) {
+    b.addEventListener('click', function(){ decide(b, 'approved'); });
+  });
+  Array.prototype.forEach.call(el.querySelectorAll('.rec-reject'), function(b) {
+    b.addEventListener('click', function(){ decide(b, 'rejected'); });
+  });
+}
+
+// ---------- Health Score band, shown at the top of the Dashboard ----------
+function healthScoreHtml_(h) {
+  if (!h || h.ok === false) return '';
+  var col = h.score >= 75 ? 'var(--nh-ok)' : (h.score >= 50 ? '#F6C744' : 'var(--nh-err)');
+  return '<div class="panel">' +
+    '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">' +
+      '<div style="text-align:center;min-width:110px">' +
+        '<div style="font-size:42px;font-weight:800;color:' + col + ';line-height:1">' + h.score + '</div>' +
+        '<div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.5px">' + escapeHtml(h.band) + '</div>' +
+      '</div>' +
+      '<div style="flex:1 1 420px;min-width:0">' +
+        '<div style="font-size:13px;font-weight:700;color:var(--nh-navy);margin-bottom:6px">Business health</div>' +
+        (h.components || []).map(function(c) {
+          var w = Math.max(0, Math.min(100, c.score));
+          var bc = c.score >= 70 ? 'var(--nh-ok)' : (c.score >= 45 ? '#F6C744' : 'var(--nh-err)');
+          return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;font-size:12px">' +
+            '<div style="width:92px;flex-shrink:0">' + escapeHtml(c.key) + '</div>' +
+            '<div style="flex:1;background:var(--nh-gray-bg);border-radius:99px;height:7px;overflow:hidden;min-width:60px">' +
+              '<div style="width:' + w + '%;height:100%;background:' + bc + '"></div>' +
+            '</div>' +
+            '<div style="width:32px;text-align:right;font-weight:700">' + c.score + '</div>' +
+            '<div class="muted" style="flex:1 1 160px;min-width:0">' + escapeHtml(c.detail || '') + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div></div>';
+}
+
 // ---------- Shared AI panel for every marketing tab ----------
 // Each marketing view gets the same affordance: a button that sends the
 // REAL business data to Claude and renders a structured, grounded plan.
