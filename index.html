@@ -1277,7 +1277,7 @@ function renderInventory(el) {
         var u = r.reorder.urgency;
         var pillCls = u === 'critical' ? 'pill-err' : (u === 'high' ? 'pill-warn' : 'pill-info');
         var runTxt = r.daily_run + '/day';
-        return '<tr>' +
+        return '<tr data-wh="' + escapeHtml(r.warehouse) + '">' +
           '<td><span class="pill ' + pillCls + '">' + escapeHtml(u) + '</span></td>' +
           '<td>' + escapeHtml(r.sku) + '</td>' +
           '<td>' + escapeHtml(r.warehouse) + '</td>' +
@@ -1299,7 +1299,7 @@ function renderInventory(el) {
           ' <span class="pill pill-warn">' + reorderWhCount + ' warehouse' + (reorderWhCount === 1 ? '' : 's') + '</span>' +
         '</h2>' +
         '<div class="desc">These ' + reorderSkuCount + ' SKU' + (reorderSkuCount === 1 ? '' : 's') + (reorderSkuCount === 1 ? ' is' : ' are') + ' running low, split across ' + reorderWhCount + ' warehouses — that\'s why the table below has ' + d.reorder.length + ' rows (one per SKU + warehouse pair). Target cover: ' + (state.boot.config.REORDER_TARGET_COVER_DAYS || 21) + 'd, lead time: ' + (state.boot.config.REORDER_LEAD_TIME_DAYS || 7) + 'd. Click "Log as issue" to hand off to ops.</div>' +
-        '<table><thead><tr><th>Urgency</th><th>SKU</th><th>Warehouse</th><th class="num">Sellable</th><th class="num">Daily run</th><th class="num">Cover</th><th class="num">Order qty</th><th>By date</th><th></th></tr></thead><tbody>' + reorderRows + '</tbody></table>' +
+        '<table id="inv-reorder-table"><thead><tr><th>Urgency</th><th>SKU</th><th>Warehouse</th><th class="num">Sellable</th><th class="num">Daily run</th><th class="num">Cover</th><th class="num">Order qty</th><th>By date</th><th></th></tr></thead><tbody>' + reorderRows + '</tbody></table>' +
         '</div>';
     }
     var rowsHtml = d.rows.map(function(r) {
@@ -1312,7 +1312,7 @@ function renderInventory(el) {
       var perfTxt = '';
       if (r.performance === 'good') perfTxt = '<span title="Healthy turnover \u2014 selling at a good pace" style="color:var(--nh-ok)">\uD83D\uDC4D</span>';
       else if (r.performance === 'poor') perfTxt = '<span title="Slow-moving \u2014 stock is sitting with little/no recent turnover" style="color:var(--nh-err)">\uD83D\uDC4E</span>';
-      return '<tr><td>' + escapeHtml(r.warehouse) + '</td><td>' + escapeHtml(r.sku) + '</td>' +
+      return '<tr data-wh="' + escapeHtml(r.warehouse) + '"><td>' + escapeHtml(r.warehouse) + '</td><td>' + escapeHtml(r.sku) + '</td>' +
              '<td class="num">' + r.sellable + '</td><td class="num">' + r.unsellable + '</td>' +
              '<td class="num">' + r.damaged + '</td><td class="num">' + r.lost + '</td>' +
              '<td class="num">' + r.sold_7d + '</td><td class="num">' + r.sold_15d + '</td><td class="num">' + r.sold_30d + '</td>' +
@@ -1320,11 +1320,75 @@ function renderInventory(el) {
              '<td class="num">' + coverTxt + '</td>' +
              '<td><span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap"><span class="pill ' + flag + '">' + escapeHtml(r.cover_flag) + '</span>' + perfTxt + '</span></td></tr>';
     }).join('');
+    // Warehouse filter — this table runs to one row per SKU x warehouse pair
+    // (43 rows across 18 warehouses at the time of writing), so scanning a
+    // single location means a lot of scrolling past irrelevant rows. Filtering
+    // is done client-side over rows already fetched: instant, no extra API
+    // round-trip, and it deliberately drives BOTH tables at once so the
+    // reorder alerts above always describe the same scope as the snapshot
+    // below (showing alerts for warehouses hidden from the table would be
+    // its own kind of confusing).
+    var whNames = {};
+    (d.rows || []).forEach(function(r) { if (r.warehouse) whNames[r.warehouse] = 1; });
+    (d.reorder || []).forEach(function(r) { if (r.warehouse) whNames[r.warehouse] = 1; });
+    var whList = Object.keys(whNames).sort(function(a, b) { return a.localeCompare(b); });
+    var whFilterHtml = whList.length > 1
+      ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<label for="inv-wh-filter" class="muted" style="font-size:12px">Warehouse</label>' +
+          '<select id="inv-wh-filter" style="min-width:200px">' +
+            '<option value="">All warehouses (' + whList.length + ')</option>' +
+            whList.map(function(w) { return '<option value="' + escapeHtml(w) + '">' + escapeHtml(w) + '</option>'; }).join('') +
+          '</select>' +
+          '<span id="inv-wh-count" class="muted" style="font-size:12px"></span>' +
+        '</div>'
+      : '';
     el.innerHTML = reorderHtml +
-      '<div class="panel"><h2>Latest snapshot \u2014 ' + escapeHtml(d.snapshot_date) + '</h2>' +
+      '<div class="panel">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">' +
+        '<h2 style="margin:0">Latest snapshot \u2014 ' + escapeHtml(d.snapshot_date) + '</h2>' + whFilterHtml +
+      '</div>' +
       '<div class="desc">Daily run = 7-day sold \u00f7 7 by default, using the 15/30-day trend instead when a warehouse likely ran low on stock recently (so the raw 7-day number would undercount real demand). Order qty next to Daily run is units needed to top up to target cover \u2014 0 means already well-stocked. \uD83D\uDC4D marks 1 unit/day or more moving; \uD83D\uDC4E marks under 1/day (including zero).</div>' +
-      '<table><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Unsellable</th><th class="num">Damaged</th><th class="num">Lost</th><th class="num">7d sold</th><th class="num">15d sold</th><th class="num">30d sold</th><th class="num">Daily run</th><th class="num">Cover (d)</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+      '<table id="inv-snap-table"><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Unsellable</th><th class="num">Damaged</th><th class="num">Lost</th><th class="num">7d sold</th><th class="num">15d sold</th><th class="num">30d sold</th><th class="num">Daily run</th><th class="num">Cover (d)</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
     renderInventoryUploadPanel_(el);
+
+    // Wire the warehouse filter. Hides non-matching rows in both tables and
+    // keeps a live count so it's obvious the view is filtered rather than
+    // empty. Also collapses the whole reorder panel when the chosen warehouse
+    // has no alerts, so an empty alerts table never sits there implying
+    // something is wrong with it.
+    var whSel = el.querySelector('#inv-wh-filter');
+    if (whSel) {
+      var countEl    = el.querySelector('#inv-wh-count');
+      var snapTable  = el.querySelector('#inv-snap-table');
+      var reorderTbl = el.querySelector('#inv-reorder-table');
+      var snapRows    = snapTable  ? Array.prototype.slice.call(snapTable.querySelectorAll('tbody tr[data-wh]')) : [];
+      var reorderRows = reorderTbl ? Array.prototype.slice.call(reorderTbl.querySelectorAll('tbody tr[data-wh]')) : [];
+      var reorderPanel = reorderTbl ? reorderTbl.closest('.panel') : null;
+      var applyWhFilter = function() {
+        var want = whSel.value;
+        var shown = 0, reorderShown = 0;
+        snapRows.forEach(function(tr) {
+          var match = !want || tr.getAttribute('data-wh') === want;
+          tr.classList.toggle('hidden', !match);
+          if (match) shown++;
+        });
+        reorderRows.forEach(function(tr) {
+          var match = !want || tr.getAttribute('data-wh') === want;
+          tr.classList.toggle('hidden', !match);
+          if (match) reorderShown++;
+        });
+        // Hide the whole alerts panel when this warehouse has none, rather
+        // than leaving a header-only table that reads as broken.
+        if (reorderPanel) reorderPanel.classList.toggle('hidden', reorderRows.length > 0 && reorderShown === 0);
+        if (countEl) {
+          countEl.textContent = want
+            ? 'showing ' + shown + ' of ' + snapRows.length + ' rows' +
+              (reorderShown ? ' · ' + reorderShown + ' reorder alert' + (reorderShown === 1 ? '' : 's') : ' · no reorder alerts')
+            : '';
+        }
+      };
+      whSel.addEventListener('change', applyWhFilter);
+    }
 
     // Wire "Log as issue" buttons
     Array.prototype.forEach.call(el.querySelectorAll('.mk-issue-btn'), function(btn) {
