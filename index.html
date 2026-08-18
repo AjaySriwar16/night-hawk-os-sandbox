@@ -4470,6 +4470,203 @@ function mktFormHtml_(cfg) {
       '<button id="mktf-save">Create</button>' +
     '</div>';
 }
+// ---------- Shared AI panel for every marketing tab ----------
+// Each marketing view gets the same affordance: a button that sends the
+// REAL business data to Claude and renders a structured, grounded plan.
+// One renderer for all eight kinds, because the only thing that actually
+// differs between them is the JSON shape coming back — duplicating the
+// button/loading/error/access-code handling eight times would guarantee
+// they drift apart.
+//
+// Results are drafts. Nothing here spends money or touches a live ad
+// account: Blinkit has no public ads API, and auto-committing budget with
+// no human in the loop isn't something this app should do. The user reads
+// the plan, edits it, and executes it in the platform's own Ads Manager —
+// which is why campaign plans render with a "Save as draft campaign"
+// action rather than a "Launch" one.
+function mktAiCard_(kind, title, subtitle) {
+  return '<div class="panel" id="mktai-panel-' + kind + '">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+      '<div><h2 style="margin:0">' + escapeHtml(title) + '</h2>' +
+        '<div class="desc" style="margin:4px 0 0">' + escapeHtml(subtitle) + '</div></div>' +
+      '<button class="mktai-run" data-kind="' + kind + '" style="padding:9px 16px;border:0;background:var(--nh-navy);color:#fff;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0">✨ Generate with AI</button>' +
+    '</div>' +
+    '<div id="mktai-out-' + kind + '" style="margin-top:14px"></div>' +
+  '</div>';
+}
+
+function mktAiVal_(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  if (typeof v === 'number') return String(v);
+  return escapeHtml(String(v));
+}
+function mktAiList_(arr, cls) {
+  if (!arr || !arr.length) return '';
+  return '<ul class="' + (cls || 'mkt-ai-bullets') + '">' +
+    arr.map(function(x) { return '<li>' + (typeof x === 'string' ? escapeHtml(x) : mktAiVal_(x)) + '</li>'; }).join('') + '</ul>';
+}
+function mktAiTable_(rows, cols) {
+  if (!rows || !rows.length) return '<div class="muted">Nothing returned for this section.</div>';
+  return '<table><thead><tr>' + cols.map(function(c) {
+      return '<th' + (c.num ? ' class="num"' : '') + '>' + escapeHtml(c.label) + '</th>';
+    }).join('') + '</tr></thead><tbody>' +
+    rows.map(function(r) {
+      return '<tr>' + cols.map(function(c) {
+        var v = r[c.key];
+        if (Array.isArray(v)) v = v.join(', ');
+        return '<td' + (c.num ? ' class="num"' : '') + '>' + mktAiVal_(v) + '</td>';
+      }).join('') + '</tr>';
+    }).join('') + '</tbody></table>';
+}
+
+// Renders whichever shape came back. Kept explicit per kind rather than a
+// generic object-dumper so each result reads like a report, not raw JSON.
+function mktAiRender_(kind, res) {
+  var r = res.result || {};
+  var head = '<div class="muted" style="font-size:11px;margin-bottom:10px">Generated ' + escapeHtml(res.generated_at || '') +
+             ' from real data, ' + escapeHtml((res.window && res.window.days) || '') + '-day window' +
+             (res.usage ? ' · ' + ((res.usage.input_tokens||0)+(res.usage.output_tokens||0)).toLocaleString('en-IN') + ' tokens' : '') + '</div>';
+  var body = '';
+
+  if (kind === 'campaign_plan') {
+    body = mktAiTable_(r.campaigns, [
+      {label:'Campaign',key:'name'},{label:'Platform',key:'platform'},{label:'SKU',key:'sku_name'},
+      {label:'Cities',key:'cities'},{label:'Daily ₹',key:'daily_budget_inr',num:true},
+      {label:'Days',key:'duration_days',num:true},{label:'Bid ₹',key:'suggested_bid_inr',num:true},
+      {label:'Exp. ROAS',key:'expected_roas',num:true}]) +
+      (r.campaigns && r.campaigns.length ? '<div style="margin-top:12px">' + r.campaigns.map(function(c, i) {
+        return '<div style="border-left:3px solid var(--nh-navy);padding:8px 12px;margin-bottom:8px;background:var(--nh-gray-bg);border-radius:0 6px 6px 0">' +
+          '<b>' + mktAiVal_(c.name) + '</b>' +
+          '<div style="font-size:12px;margin-top:4px"><b>Why:</b> ' + mktAiVal_(c.rationale) + '</div>' +
+          (c.risk ? '<div style="font-size:12px;margin-top:3px;color:var(--nh-err)"><b>Risk:</b> ' + mktAiVal_(c.risk) + '</div>' : '') +
+          (c.suggested_keywords && c.suggested_keywords.length ? '<div style="font-size:12px;margin-top:3px"><b>Keywords:</b> ' + escapeHtml(c.suggested_keywords.join(', ')) + '</div>' : '') +
+          '<button class="mktai-save-campaign" data-idx="' + i + '" style="margin-top:8px;padding:5px 11px;border:1px solid var(--nh-navy);background:#fff;color:var(--nh-navy);border-radius:5px;font-size:12px;cursor:pointer">Save as draft campaign</button>' +
+        '</div>';
+      }).join('') + '</div>' : '') +
+      (r.skip && r.skip.length ? '<h3 class="mkt-ai-h">Deliberately not advertising</h3>' +
+        mktAiTable_(r.skip, [{label:'What',key:'what'},{label:'Why',key:'why'}]) : '');
+  } else if (kind === 'budget') {
+    body = (r.total_monthly_budget_inr ? '<div class="kpi-grid"><div class="kpi"><div class="label">Proposed monthly budget</div><div class="value">' + inr(Math.round(r.total_monthly_budget_inr)) + '</div></div></div>' : '') +
+      mktAiTable_(r.allocations, [{label:'Platform',key:'platform'},{label:'SKU',key:'sku_name'},{label:'City',key:'city'},
+        {label:'₹ / month',key:'monthly_inr',num:true},{label:'Share %',key:'share_pct',num:true},{label:'Basis',key:'basis'}]) +
+      (r.guardrails && r.guardrails.length ? '<h3 class="mkt-ai-h">Guardrails</h3>' + mktAiList_(r.guardrails) : '');
+  } else if (kind === 'creative') {
+    body = (r.creatives || []).map(function(c) {
+      return '<div style="border:1px solid var(--nh-gray-line);border-radius:8px;padding:12px;margin-bottom:10px">' +
+        '<div style="font-size:11px;color:var(--nh-gray-text);text-transform:uppercase;letter-spacing:.4px">' + mktAiVal_(c.sku_name) + ' · ' + mktAiVal_(c.angle) + '</div>' +
+        '<div style="font-size:16px;font-weight:700;color:var(--nh-navy);margin-top:5px">' + mktAiVal_(c.headline) + '</div>' +
+        '<div style="font-size:13px;margin-top:4px">' + mktAiVal_(c.description) + '</div>' +
+        '<div style="margin-top:6px"><span class="pill pill-info">' + mktAiVal_(c.cta) + '</span></div>' +
+        '<div class="muted" style="font-size:12px;margin-top:6px">' + mktAiVal_(c.why_this_works) + '</div>' +
+      '</div>';
+    }).join('') || '<div class="muted">No creatives returned.</div>';
+  } else if (kind === 'listing_audit') {
+    body = (r.findings || []).map(function(f) {
+      var cls = f.severity === 'high' ? 'pill-err' : (f.severity === 'medium' ? 'pill-warn' : 'pill-info');
+      return '<div style="border:1px solid var(--nh-gray-line);border-radius:8px;padding:12px;margin-bottom:10px">' +
+        '<div><span class="pill ' + cls + '">' + mktAiVal_(f.severity) + '</span> <b>' + mktAiVal_(f.sku_name) + '</b> — ' + mktAiVal_(f.issue) + '</div>' +
+        '<div style="font-size:12px;margin-top:5px"><b>Evidence:</b> ' + mktAiVal_(f.evidence) + '</div>' +
+        '<div style="font-size:12px;margin-top:3px"><b>Fix:</b> ' + mktAiVal_(f.fix) + '</div>' +
+        (f.suggested_title ? '<div style="font-size:12px;margin-top:5px;background:var(--nh-gray-bg);padding:6px 9px;border-radius:5px"><b>Suggested title:</b> ' + mktAiVal_(f.suggested_title) + '</div>' : '') +
+      '</div>';
+    }).join('') || '<div class="muted">No findings returned.</div>';
+  } else if (kind === 'competitor') {
+    body = (r.position ? '<p class="mkt-ai-p"><b>Position:</b> ' + mktAiVal_(r.position) + '</p>' : '') +
+      (r.threats && r.threats.length ? '<h3 class="mkt-ai-h">Threats</h3>' + mktAiTable_(r.threats, [{label:'Competitor',key:'competitor'},{label:'Threat',key:'threat'},{label:'Our response',key:'our_response'}]) : '') +
+      (r.opportunities && r.opportunities.length ? '<h3 class="mkt-ai-h">Opportunities</h3>' + mktAiList_(r.opportunities) : '') +
+      (r.data_gaps && r.data_gaps.length ? '<h3 class="mkt-ai-h">Go and find out</h3>' + mktAiList_(r.data_gaps) : '');
+  } else if (kind === 'audience') {
+    body = mktAiTable_(r.cohorts, [{label:'Cohort',key:'name'},{label:'Definition',key:'definition'},
+      {label:'Evidence',key:'evidence'},{label:'Size signal',key:'size_signal'},
+      {label:'How to target',key:'how_to_target'},{label:'Best SKU',key:'suggested_sku'}]);
+  } else if (kind === 'overview') {
+    body = (r.headline ? '<p class="mkt-ai-p" style="font-size:15px"><b>' + mktAiVal_(r.headline) + '</b></p>' : '') +
+      (r.working && r.working.length ? '<h3 class="mkt-ai-h">Working</h3>' + mktAiList_(r.working) : '') +
+      (r.not_working && r.not_working.length ? '<h3 class="mkt-ai-h">Not working</h3>' + mktAiList_(r.not_working) : '') +
+      (r.urgent_actions && r.urgent_actions.length ? '<h3 class="mkt-ai-h">Do this week</h3>' +
+        mktAiTable_(r.urgent_actions, [{label:'Action',key:'action'},{label:'Why',key:'why'},{label:'Impact',key:'impact'}]) : '');
+  } else if (kind === 'strategy') {
+    body = (r.focus ? '<p class="mkt-ai-p"><b>Focus:</b> ' + mktAiVal_(r.focus) + '</p>' : '') +
+      (r.stop_doing && r.stop_doing.length ? '<h3 class="mkt-ai-h">Stop doing</h3>' + mktAiList_(r.stop_doing) : '') +
+      (r.phases && r.phases.length ? '<h3 class="mkt-ai-h">Phases</h3>' + (r.phases || []).map(function(p) {
+        return '<div style="border-left:3px solid var(--nh-navy);padding:8px 12px;margin-bottom:8px;background:var(--nh-gray-bg);border-radius:0 6px 6px 0">' +
+          '<b>' + mktAiVal_(p.phase) + '</b> <span class="muted">' + mktAiVal_(p.weeks) + '</span>' +
+          '<div style="font-size:12px;margin-top:3px"><b>Goal:</b> ' + mktAiVal_(p.goal) + '</div>' +
+          mktAiList_(p.actions) +
+          '<div style="font-size:12px"><b>Success metric:</b> ' + mktAiVal_(p.success_metric) + '</div>' +
+        '</div>';
+      }).join('') : '') +
+      (r.assumptions && r.assumptions.length ? '<h3 class="mkt-ai-h">This only works if</h3>' + mktAiList_(r.assumptions) : '');
+  }
+
+  var summary = r.summary ? '<div class="alert low" style="margin-top:12px"><div class="sev">Summary</div><div class="msg">' + mktAiVal_(r.summary) + '</div></div>' : '';
+  var note = '<div class="muted" style="font-size:11px;margin-top:10px;border-top:1px solid var(--nh-gray-line);padding-top:8px">' +
+    'This is a draft plan generated from your real numbers — review it before acting. Nothing here has been sent to any ad platform; ' +
+    'quick-commerce platforms have no public ads API, so campaigns are still entered by hand in their Ads Manager.</div>';
+  return head + (body || '<div class="muted">No content returned.</div>') + summary + note;
+}
+
+// Wires every AI button rendered inside `el`. Stores the last result on the
+// element so save-actions can read it back without re-calling the model.
+function wireMktAi_(el) {
+  Array.prototype.forEach.call(el.querySelectorAll('.mktai-run'), function(btn) {
+    btn.addEventListener('click', function() {
+      var kind = btn.getAttribute('data-kind');
+      var out = el.querySelector('#mktai-out-' + kind);
+      btn.disabled = true; btn.textContent = 'Thinking…';
+      out.innerHTML = '<div class="muted"><span class="loading"></span> Reading your real sales, margin, stock and ad data, then planning… (10–25s)</div>';
+      api('aiMarketing', { kind: kind, aiCode: getAiCode(), days: 60 }, 'POST').then(function(res) {
+        btn.disabled = false; btn.textContent = '✨ Regenerate';
+        if (!res || res.ok === false) {
+          out.innerHTML = '<div class="alert high" style="margin:0"><div class="sev">Error</div><div class="msg">' + escapeHtml((res && res.error) || 'Unknown error') + '</div></div>';
+          return;
+        }
+        el.__mktAiLast = el.__mktAiLast || {};
+        el.__mktAiLast[kind] = res;
+        out.innerHTML = mktAiRender_(kind, res);
+        wireMktAiSaves_(el, kind, out);
+      }).catch(function(e) {
+        btn.disabled = false; btn.textContent = '✨ Generate with AI';
+        out.innerHTML = '<div class="alert high" style="margin:0"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message || e) + '</div></div>';
+      });
+    });
+  });
+}
+
+// "Save as draft campaign" — writes the AI's plan into the campaigns tab with
+// status 'draft' so it becomes a real, editable record rather than text that
+// disappears on refresh. Draft, never active: a human still has to run it.
+function wireMktAiSaves_(el, kind, out) {
+  if (kind !== 'campaign_plan') return;
+  Array.prototype.forEach.call(out.querySelectorAll('.mktai-save-campaign'), function(b) {
+    b.addEventListener('click', function() {
+      var res = (el.__mktAiLast || {})[kind];
+      var c = res && res.result && res.result.campaigns && res.result.campaigns[+b.getAttribute('data-idx')];
+      if (!c) return;
+      var platId = '';
+      (state.boot.platforms || []).forEach(function(p) {
+        if (String(c.platform || '').toLowerCase().indexOf(String(p.name || '').toLowerCase().split(' ')[0]) !== -1) platId = p.platform_id;
+      });
+      b.disabled = true; b.textContent = 'Saving…';
+      api('createCampaign', {
+        name: c.name, platform_id: platId, sku_id: c.sku_id || '',
+        objective: c.objective || '', budget: Number(c.daily_budget_inr) || 0,
+        status: 'draft',
+        notes: 'AI-generated ' + (res.generated_at || '') + '. Cities: ' + ((c.cities || []).join(', ')) +
+               '. Keywords: ' + ((c.suggested_keywords || []).join(', ')) +
+               '. Suggested bid ₹' + (c.suggested_bid_inr || '—') + ', expected ROAS ' + (c.expected_roas || '—') +
+               '. Rationale: ' + (c.rationale || ''),
+      }, 'POST').then(function() {
+        b.textContent = 'Saved to Campaign Manager ✓';
+        b.style.background = 'var(--nh-ok)'; b.style.color = '#fff'; b.style.border = '0';
+      }).catch(function(e) {
+        b.disabled = false; b.textContent = 'Save as draft campaign';
+        alert('Failed: ' + (e.message || e));
+      });
+    });
+  });
+}
+
 function renderMktCrudView_(el, cfg) {
   setLoading(el);
   return api(cfg.listAction).then(function(d) {
@@ -4488,6 +4685,7 @@ function renderMktCrudView_(el, cfg) {
       return '<tr data-id="' + escapeHtml(r[cfg.idField]) + '">' + tds + '<td><a href="#" class="mkt-crud-delete" style="color:var(--nh-red,#BF1A2F)">delete</a></td></tr>';
     }).join('');
     el.innerHTML =
+      (cfg.aiKind ? mktAiCard_(cfg.aiKind, cfg.aiTitle || ('AI ' + cfg.title), cfg.aiSubtitle || '') : '') +
       '<div class="panel">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:10px">' +
         '<h2 style="margin:0">' + escapeHtml(cfg.title) + '</h2>' +
@@ -4499,6 +4697,7 @@ function renderMktCrudView_(el, cfg) {
         : '<div class="muted">No ' + escapeHtml(cfg.title.toLowerCase()) + ' logged yet. Click + New ' + escapeHtml(cfg.singular) + ' to add one.</div>') +
       '</div>';
 
+    wireMktAi_(el);
     $('mkt-crud-new').addEventListener('click', function() {
       var proceed = function() {
         showModal(mktFormHtml_(cfg));
@@ -4534,7 +4733,7 @@ function renderMktCrudView_(el, cfg) {
 // ---------- Campaign Manager ----------
 function renderMktCampaigns(el) {
   var cfg = {
-    title: 'Campaign Manager', tabName: 'campaigns', singular: 'campaign', idField: 'campaign_id',
+    aiKind: 'campaign_plan', aiTitle: 'AI campaign planner', aiSubtitle: 'Reads your real margin, ROAS and stock cover, then proposes campaigns worth running — and names the ones that would lose money.', title: 'Campaign Manager', tabName: 'campaigns', singular: 'campaign', idField: 'campaign_id',
     listAction: 'campaigns', createAction: 'createCampaign', deleteAction: 'deleteCampaign',
     desc: 'Track every paid campaign across platforms — budget, spend, status, and which SKU/city it’s driving.',
     fields: [
@@ -4569,7 +4768,7 @@ function renderMktCampaigns(el) {
 // ---------- Creative Lab ----------
 function renderMktCreative(el) {
   var cfg = {
-    title: 'Creative Lab', tabName: 'creatives', singular: 'creative', idField: 'creative_id',
+    aiKind: 'creative', aiTitle: 'AI creative writer', aiSubtitle: 'Writes ad copy for your best-performing SKUs, several distinct angles rather than variations of one line.', title: 'Creative Lab', tabName: 'creatives', singular: 'creative', idField: 'creative_id',
     listAction: 'creatives', createAction: 'createCreative', deleteAction: 'deleteCreative',
     desc: 'Track every ad creative — image, video, banner — its status, and how it’s performing.',
     fields: [
@@ -4606,7 +4805,7 @@ function renderMktCreative(el) {
 // ---------- Listing Health ----------
 function renderMktListing(el) {
   var cfg = {
-    title: 'Listing Health', tabName: 'listing_health', singular: 'listing check', idField: 'listing_health_id',
+    aiKind: 'listing_audit', aiTitle: 'AI listing audit', aiSubtitle: 'Audits your listings against real availability and per-city sales, with a concrete suggested title for each fix.', title: 'Listing Health', tabName: 'listing_health', singular: 'listing check', idField: 'listing_health_id',
     listAction: 'listingHealth', createAction: 'createListingHealth', deleteAction: 'deleteListingHealth',
     desc: 'Log periodic listing quality checks per SKU × platform — content score, rating, reviews, image count, open issues.',
     fields: [
@@ -4636,7 +4835,7 @@ function renderMktListing(el) {
 // ---------- Audience & Cohorts ----------
 function renderMktAudience(el) {
   var cfg = {
-    title: 'Audience & Cohorts', tabName: 'audience_cohorts', singular: 'cohort', idField: 'cohort_id',
+    aiKind: 'audience', aiTitle: 'AI cohort builder', aiSubtitle: 'Derives targetable customer cohorts from real city and SKU purchase patterns.', title: 'Audience & Cohorts', tabName: 'audience_cohorts', singular: 'cohort', idField: 'cohort_id',
     listAction: 'audienceCohorts', createAction: 'createAudienceCohort', deleteAction: 'deleteAudienceCohort',
     desc: 'Define and track the customer segments you’re targeting — who they are, roughly how big, and which platform they’re on.',
     fields: [
@@ -4659,7 +4858,7 @@ function renderMktAudience(el) {
 // ---------- Competitor Intel ----------
 function renderMktCompetitor(el) {
   var cfg = {
-    title: 'Competitor Intel', tabName: 'competitor_intel', singular: 'observation', idField: 'intel_id',
+    aiKind: 'competitor', aiTitle: 'AI competitive read', aiSubtitle: 'Assesses your position from logged intel and your own pricing — and tells you what to go and observe if intel is thin.', title: 'Competitor Intel', tabName: 'competitor_intel', singular: 'observation', idField: 'intel_id',
     listAction: 'competitorIntel', createAction: 'createCompetitorIntel', deleteAction: 'deleteCompetitorIntel',
     desc: 'Log competitor pricing, promos, and moves you observe on Blinkit/Instamart/Zepto — keeps pricing and positioning decisions grounded in reality.',
     fields: [
@@ -4714,6 +4913,7 @@ function renderMktOverview(el) {
       : '<div class="muted">No campaigns logged yet — add one from Campaign Manager.</div>';
 
     el.innerHTML =
+      mktAiCard_('overview', 'AI marketing read', 'Summarises what is working, what is losing money, and the three most urgent actions this week.') +
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Ad Spend</div><div class="value">' + inr(k.ad_spend) + '</div><div class="sub">' + mktRangeLabel_(dash) + '</div></div>' +
         '<div class="kpi ' + roasClass + '"><div class="label">ROAS</div><div class="value">' + k.roas + 'x</div><div class="sub">Revenue ' + inr(k.revenue) + '</div></div>' +
@@ -4734,6 +4934,7 @@ function renderMktOverview(el) {
       ]},
       options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 10 } } } }
     });
+    wireMktAi_(el);
   });
 }
 
@@ -4770,6 +4971,7 @@ function renderMktBudget(el) {
       : '<div class="alert low"><div class="sev">OK</div><div class="msg"><b>All campaigns within budget</b></div></div>';
 
     el.innerHTML =
+      mktAiCard_('budget', 'AI budget allocator', 'Allocates a monthly ad budget across platforms, SKUs and cities using real ROAS and contribution margin.') +
       '<div class="kpi-grid">' +
         '<div class="kpi"><div class="label">Total Campaign Budget</div><div class="value">' + inr(totalBudget) + '</div><div class="sub">' + camp.length + ' campaigns</div></div>' +
         '<div class="kpi"><div class="label">Spent to Date</div><div class="value">' + inr(totalSpent) + '</div><div class="sub">' + (totalBudget ? Math.round((totalSpent/totalBudget)*100) : 0) + '% of budget</div></div>' +
@@ -4778,6 +4980,7 @@ function renderMktBudget(el) {
       '<div class="panel"><h2>Budget alerts</h2>' + alertHtml + '</div>' +
       renderBudgetSnapshotHtml(b, currentMonth) +
       '<div class="panel"><h2>Campaign budget vs spend</h2><div class="desc">Update "spend to date" on any campaign (edit the campaigns tab in your Sheet, or via the API) to keep this live.</div>' + campTableHtml + '</div>';
+    wireMktAi_(el);
   });
 }
 
@@ -4961,8 +5164,10 @@ function renderMktAlerts(el) {
       : '<div class="alert low"><div class="sev">OK</div><div class="msg"><b>All clear</b> — no marketing alerts right now.</div></div>';
 
     el.innerHTML =
+      mktAiCard_('strategy', 'AI 90-day strategy', 'Turns the current alerts and economics into a rolling plan: where to focus, what to stop, what to test.') +
       '<div class="kpi-grid"><div class="kpi ' + (alerts.length ? 'err' : 'ok') + '"><div class="label">Open Alerts</div><div class="value">' + alerts.length + '</div></div></div>' +
       '<div class="panel"><h2>Live marketing alerts</h2><div class="desc">Derived from campaigns, listing health, inventory cover, and ROAS — refreshes every time you open this tab.</div>' + alertsHtml + '</div>';
+    wireMktAi_(el);
   });
 }
 
