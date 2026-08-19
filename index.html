@@ -257,6 +257,7 @@
       <li data-view="scenarios"><span class="ico">&#9881;</span> Scenarios</li>
       <li data-view="decisions"><span class="ico">&#10004;</span> Decisions</li>
       <li data-view="issues"><span class="ico">!</span> Issues</li>
+      <li data-view="integrations"><span class="ico">&#8644;</span> Integrations</li>
       <li data-view="import"><span class="ico">&#8682;</span> Data Import</li>
       <li data-view="master"><span class="ico">&#9881;</span> Master Data</li>
       <li class="nav-section-label">Digital Marketing</li>
@@ -316,6 +317,7 @@
     <section id="view-scenarios" class="hidden"></section>
     <section id="view-decisions" class="hidden"></section>
     <section id="view-issues" class="hidden"></section>
+    <section id="view-integrations" class="hidden"></section>
     <section id="view-import" class="hidden"></section>
     <section id="view-master" class="hidden"></section>
     <section id="view-marketing" class="hidden"><div id="mkt-inner"></div></section>
@@ -613,6 +615,7 @@ function switchView(v) {
     forecast: 'Forecast vs Actual',
     scenarios: 'Scenario Planner',
     decisions: 'Decisions & Experiments',
+    integrations: 'Integrations',
     issues: 'Issues & Actions', 'import': 'Data Import Center', master: 'Master Data Admin',
     'mkt-overview': 'Marketing Overview', 'mkt-ai': 'Ask Marketing AI', 'mkt-campaigns': 'Campaign Manager',
     'mkt-creative': 'Creative Lab', 'mkt-listing': 'Listing Health', 'mkt-audience': 'Audience & Cohorts',
@@ -634,7 +637,7 @@ function switchView(v) {
   // whose data they're showing rather than showing no platform context at all.
   $('platform-static').classList.toggle('hidden', !!PLATFORM_FILTER_VIEWS_[v] || !!NO_PLATFORM_LABEL_VIEWS_[v]);
   var isMkt = v.indexOf('mkt-') === 0;
-  ['brief','recs','ai','dashboard','sales','unit-econ','ads','inventory','complaints','expansion','budget','cash','forecast','scenarios','decisions','issues','import','master'].forEach(function(id) {
+  ['brief','recs','ai','dashboard','sales','unit-econ','ads','inventory','complaints','expansion','budget','cash','forecast','scenarios','decisions','issues','integrations','import','master'].forEach(function(id) {
     $('view-' + id).classList.toggle('hidden', id !== v);
   });
   $('view-marketing').classList.toggle('hidden', !isMkt);
@@ -657,6 +660,7 @@ function loadView(v) {
   switch (v) {
     case 'brief':     render = renderBrief; break;
     case 'recs':      render = renderRecommendations; break;
+    case 'integrations': render = renderIntegrations; break;
     case 'ai':        render = renderAI; break;
     case 'dashboard': render = renderDashboard; break;
     case 'sales':     render = renderSales; break;
@@ -4479,6 +4483,89 @@ function mktFormHtml_(cfg) {
       '<button id="mktf-save">Create</button>' +
     '</div>';
 }
+// ---------- Integrations: one-click sync from the Blinkit portals ----------
+// Why a bookmarklet rather than a button that "just syncs":
+// Blinkit's sales and ads figures sit behind session-authenticated internal
+// endpoints. A server-side fetch has no session and returns 401; a fetch from
+// this app's own origin is blocked by CORS. Running the read inside a tab the
+// user is already logged into is the only approach that works without this
+// app ever holding Blinkit credentials — which it deliberately does not.
+//
+// The trade-off is stated plainly on the page: these are undocumented
+// endpoints, they can change without notice, and when they do the file
+// importer remains the reliable path.
+var NH_SYNC_BOOKMARKLET_SRC = "(function(){\nvar API='__API_URL__', TOK='__TOKEN__';\nfunction log(m,c){var d=document.getElementById('nhsync')||(function(){var x=document.createElement('div');x.id='nhsync';x.style.cssText='position:fixed;right:16px;bottom:16px;z-index:2147483647;width:340px;max-height:60vh;overflow:auto;background:#0B3A6F;color:#fff;font:12px/1.5 -apple-system,system-ui,sans-serif;padding:12px 14px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.35)';document.body.appendChild(x);return x;})();d.innerHTML+='<div style=\"color:'+(c||'#fff')+'\">'+m+'</div>';d.scrollTop=d.scrollHeight;}\nfunction post(p){return fetch(API,{method:'POST',body:JSON.stringify(Object.assign({token:TOK},p))}).then(function(r){return r.json();});}\nvar host=location.hostname;\nlog('<b>Night Hawk sync</b>');\nif(host.indexOf('brands.blinkit')!==-1){\nlog('Brand Central detected. Reading campaigns\u2026');\nvar to=new Date(),from=new Date(Date.now()-60*864e5);\nfunction d(x){return (x.getMonth()+1)+'/'+x.getDate()+'/'+x.getFullYear();}\nvar body={from_date:d(from),to_date:d(to),campaign_types:['PRODUCT_LISTING','PRODUCT_RECOMMENDATION','SHELF_DIY','STORY_DIY','BANNER_DIY','BANNER_LISTING']};\nPromise.all([\nfetch('/adservice/v1/campaigns/metrics-trends',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign({metrics:['budget_consumed']},body))}).then(function(r){return r.json();}),\nfetch('/adservice/v1/advertisers/campaigns',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json();})\n]).then(function(res){\nvar trends=((res[0]||{}).data)||[];\nvar ads=trends.filter(function(t){return (+t.budget_consumed||0)>0;}).map(function(t){return {date:String(t.date_ist).slice(0,10),amount:+t.budget_consumed||0};});\nvar camps=[],agg={};\n(((res[1]||{}).data)||{}).campaigns&&res[1].data.campaigns.forEach(function(c){\nvar k=(c.campaign_name||'')+'|'+(c.campaign_type||'');\nif(!agg[k])agg[k]={campaign_name:c.campaign_name,campaign_type:c.campaign_type,status:c.campaign_status,date:String(c.start_ts||'').slice(0,10),spend:0,impressions:0,atcs:0,roasN:0,roasSum:0};\nagg[k].spend+=+c.budget_consumed||0;agg[k].impressions+=+c.impressions||0;agg[k].atcs+=+c.atcs||0;\nif((+c.roas||0)>0){agg[k].roasSum+=+c.roas;agg[k].roasN++;}\n});\nObject.keys(agg).forEach(function(k){var a=agg[k];a.roas=a.roasN?Math.round(a.roasSum/a.roasN*100)/100:0;delete a.roasN;delete a.roasSum;camps.push(a);});\nlog('Found '+ads.length+' spend days, '+camps.length+' campaigns. Sending\u2026');\nreturn post({action:'syncBlinkit',payload:{source:'brand-central-bookmarklet',platform_id:'PLT-001',ad_spend:ads,campaign_metrics:camps}});\n}).then(function(r){\nvar d=(r&&r.data)||{};\nlog('<b style=\"color:#7CE7A6\">Done.</b> Ad spend +'+((d.ad_spend||{}).added||0)+'/~'+((d.ad_spend||{}).updated||0)+', campaigns +'+((d.campaigns||{}).added||0)+'/~'+((d.campaigns||{}).updated||0));\n((d.warnings)||[]).forEach(function(w){log('\u26a0 '+w,'#FFD37A');});\n}).catch(function(e){log('<b style=\"color:#FF8A8A\">Failed:</b> '+e.message+'<br><span style=\"opacity:.8\">Blinkit may have changed these endpoints. Use Data Import with a file export instead.</span>');});\n} else if(host.indexOf('seller.blinkit')!==-1){\nlog('Seller Hub detected. Reading sales\u2026');\nPromise.all([\nfetch('/seller-hub/api/sales/performance/metrics?duration=LAST_7_DAYS',{headers:{accept:'application/json'}}).then(function(r){return r.json();}),\nfetch('/seller-hub/api/sales/products/performance?duration=LAST_7_DAYS',{headers:{accept:'application/json'}}).then(function(r){return r.json();})\n]).then(function(res){\nvar hist=(((res[0]||{}).data)||{}).sales_performance_histogram_metrics||[];\nvar inr=hist.filter(function(h){return /INR/i.test(h.title);})[0]||{bucket_data:[]};\nvar uni=hist.filter(function(h){return /Unit/i.test(h.title);})[0]||{bucket_data:[]};\nvar yr=new Date().getFullYear();\nvar M={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};\nfunction pd(t){var m=String(t).match(/(\\d+)\\w*\\s+(\\w{3})/);if(!m)return null;var dt=new Date(yr,M[m[2]],+m[1]);return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');}\nvar sales=inr.bucket_data.map(function(b,i){return {date:pd(b.bucket_title),revenue:+b.bucket_value||0,packs:+((uni.bucket_data[i]||{}).bucket_value)||0};}).filter(function(x){return x.date&&x.packs>0;});\nvar prods=(((res[1]||{}).data)||{}).product_sales_performance||[];\nvar mix=prods.map(function(p){\nvar packs=+p.units_sales||0, amt=+String(p.sales_amount||'').replace(/[^\\d.]/g,'')||0;\nvar n=(p.product_name||'').toLowerCase(), u=(p.unit||'').toLowerCase(), sku='';\nvar six=u.indexOf('6 x')!==-1, two=u.indexOf('2 x')!==-1;\nif(n.indexOf('tropical')!==-1||n.indexOf('classic')!==-1) sku=six?'SKU-003':(two?'SKU-005':'SKU-001');\nelse if(n.indexOf('berry')!==-1) sku=six?'SKU-004':(two?'SKU-006':'SKU-002');\nreturn sku&&packs>0?{sku_id:sku,packs:packs,price_per_pack:packs?amt/packs:0}:null;\n}).filter(Boolean);\nlog('Found '+sales.length+' days, '+mix.length+' SKUs in mix. Sending\u2026');\nif(!mix.length){log('\u26a0 No SKU mix \u2014 sales will be rejected to avoid corrupting margin.','#FFD37A');}\nreturn post({action:'syncBlinkit',payload:{source:'seller-hub-bookmarklet',platform_id:'PLT-001',sales:sales,sku_mix:mix}});\n}).then(function(r){\nvar d=(r&&r.data)||{};\nlog('<b style=\"color:#7CE7A6\">Done.</b> Sales +'+((d.sales||{}).added||0)+'/~'+((d.sales||{}).updated||0));\n((d.warnings)||[]).forEach(function(w){log('\u26a0 '+w,'#FFD37A');});\n}).catch(function(e){log('<b style=\"color:#FF8A8A\">Failed:</b> '+e.message+'<br><span style=\"opacity:.8\">Blinkit may have changed these endpoints. Use Data Import with a file export instead.</span>');});\n} else {\nlog('<b style=\"color:#FFD37A\">Open this on a Blinkit tab.</b><br>Works on brands.blinkit.com (ads) or seller.blinkit.com (sales).');\n}\n})();";
+
+function nhBookmarkletHref_() {
+  var api = localStorage.getItem('nh.apiUrl') || '';
+  var tok = localStorage.getItem('nh.apiToken') || '';
+  var src = NH_SYNC_BOOKMARKLET_SRC
+    .replace('__API_URL__', api.replace(/'/g, "\\'"))
+    .replace('__TOKEN__', tok.replace(/'/g, "\\'"));
+  return 'javascript:' + encodeURIComponent(src);
+}
+
+function renderIntegrations(el) {
+  setLoading(el);
+  return api('syncStatus').then(function(d) {
+    var sources = (d && d.sources) || [];
+    var rows = sources.map(function(s) {
+      var age = s.age_days;
+      var cls = age == null ? 'pill-info' : (age <= 2 ? 'pill-ok' : (age <= 7 ? 'pill-warn' : 'pill-err'));
+      var txt = age == null ? 'no data' : (age === 0 ? 'today' : age + ' day' + (age === 1 ? '' : 's') + ' old');
+      return '<tr><td>' + escapeHtml(s.label) + '</td>' +
+             '<td>' + escapeHtml(s.last_data || '—') + '</td>' +
+             '<td><span class="pill ' + cls + '">' + txt + '</span></td></tr>';
+    }).join('');
+
+    var href = nhBookmarkletHref_();
+    var ready = !!(localStorage.getItem('nh.apiUrl') && localStorage.getItem('nh.apiToken'));
+
+    el.innerHTML =
+      '<div class="panel"><h2>Data freshness</h2>' +
+        '<div class="desc">How current each Blinkit source is. Anything over a week old means the dashboards are describing a business that has moved on.</div>' +
+        '<table><thead><tr><th>Source</th><th>Latest data</th><th>Age</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+
+      '<div class="panel"><h2>Sync from Blinkit</h2>' +
+        '<div class="desc">Pulls sales, ad spend and campaign performance straight from the Blinkit portals — no file exports.</div>' +
+        (ready ? '' : '<div class="alert high" style="margin:10px 0"><div class="sev">Setup needed</div><div class="msg">Set your API URL and access token first (sidebar links), then reload this page.</div></div>') +
+        '<div style="background:var(--nh-gray-bg);border-radius:8px;padding:14px;margin-top:10px">' +
+          '<div style="font-weight:700;color:var(--nh-navy);margin-bottom:8px">One-time setup</div>' +
+          '<div style="font-size:13px;line-height:1.7">' +
+            '1. Make sure your browser\'s bookmarks bar is visible (Cmd/Ctrl + Shift + B).<br>' +
+            '2. Drag this button up onto it &rarr; ' +
+            (ready
+              ? '<a href="' + href + '" style="display:inline-block;padding:6px 14px;background:var(--nh-navy);color:#fff;border-radius:6px;text-decoration:none;font-weight:600;font-size:12px" onclick="alert(\'Drag this to your bookmarks bar — don\\\'t click it here.\'); return false;">⚡ Sync Night Hawk</a>'
+              : '<span class="muted">(available once API URL + token are set)</span>') +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-top:14px">' +
+          '<div style="font-weight:700;color:var(--nh-navy);margin-bottom:8px">Every time you want fresh data</div>' +
+          '<div style="font-size:13px;line-height:1.7">' +
+            '1. Open <b>brands.blinkit.com</b> (ads) or <b>seller.blinkit.com</b> (sales), logged in.<br>' +
+            '2. Click the <b>⚡ Sync Night Hawk</b> bookmark.<br>' +
+            '3. A panel appears bottom-right showing what was pulled. Repeat on the other portal.<br>' +
+            '4. Come back here and hit Refresh.' +
+          '</div>' +
+        '</div>' +
+        '<div class="alert medium" style="margin-top:14px"><div class="sev">Read this before relying on it</div><div class="msg">' +
+          'This reads Blinkit\'s <b>internal, undocumented</b> endpoints using your existing login. ' +
+          'No Blinkit password or cookie is ever stored by this app, and nothing runs unless you click. ' +
+          'But those endpoints can change without notice — when the sync breaks, use <b>Data Import</b> with a normal file export, which always works. ' +
+          'Worth confirming with your Blinkit account manager that programmatic reads are acceptable before depending on this.' +
+        '</div></div>' +
+        '<div class="muted" style="font-size:11px;margin-top:10px">' +
+          'The bookmarklet contains your API URL and access token so it can post back. Treat it like a password — don\'t share it or install it on a shared machine.' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="panel"><h2>Sales sync and SKU attribution</h2>' +
+        '<div class="desc">Seller Hub reports daily sales as a single total, with no SKU breakdown per day. Writing that in as-is would leave sku_id blank, which makes COGS resolve to zero and silently corrupts contribution margin — that exact bug once produced a cost per can lower than the COGS per can. So the sync apportions each day across SKUs using the product mix from the same portal, preserving both the day\'s pack count and its revenue exactly. If no mix is available the sales rows are rejected rather than written wrong.</div>' +
+      '</div>';
+  });
+}
+
 // ---------- Recommendations: the decision queue ----------
 // This is the view that makes the app feel like a manager rather than a
 // dashboard: a ranked list of things that need deciding, each carrying the
