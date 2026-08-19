@@ -4540,6 +4540,7 @@ function recCardHtml_(r) {
       '</div>' +
       '<div style="display:flex;gap:6px;flex-shrink:0">' +
         '<button class="rec-approve" data-id="' + escapeHtml(r.rec_id) + '" style="padding:7px 13px;border:0;background:var(--nh-navy);color:#fff;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Approve</button>' +
+        '<button class="rec-brief" data-id="' + escapeHtml(r.rec_id) + '" style="padding:7px 13px;border:1px solid var(--nh-navy);background:#fff;color:var(--nh-navy);border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap">Build brief</button>' +
         '<button class="rec-reject" data-id="' + escapeHtml(r.rec_id) + '" style="padding:7px 13px;border:1px solid var(--nh-gray-line);background:#fff;color:var(--nh-err);border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap">Reject</button>' +
       '</div>' +
     '</div>' +
@@ -4554,6 +4555,57 @@ function recCardHtml_(r) {
     '</div>' +
     '<div class="rec-result" style="margin-top:8px"></div>' +
   '</div>';
+}
+
+// Renders the copy-paste brief. This is the artefact the manager actually
+// carries to Brand Central, so it is laid out as fields to transcribe rather
+// than prose to read — and it states plainly that nothing was launched.
+function renderCampaignBrief_(container, b) {
+  if (!b || b.ok === false) {
+    container.innerHTML = '<div class="alert high" style="margin:8px 0 0"><div class="sev">Error</div><div class="msg">' +
+      escapeHtml((b && b.error) || 'Could not build brief') + '</div></div>';
+    return;
+  }
+  if (!b.approved_to_run) {
+    container.innerHTML = '<div class="alert high" style="margin:8px 0 0">' +
+      '<div class="sev">Campaign not recommended</div>' +
+      '<div class="msg"><b>The system declined to produce a runnable brief.</b><br>' +
+      escapeHtml(b.blocked_reason) + '</div></div>';
+    return;
+  }
+  var br = b.brief || {}, ba = b.basis || {};
+  function row(label, val) {
+    return '<div style="display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--nh-gray-line)">' +
+      '<div style="width:150px;flex-shrink:0;font-size:12px;color:var(--nh-gray-text)">' + escapeHtml(label) + '</div>' +
+      '<div style="font-size:13px;font-weight:600">' + escapeHtml(String(val)) + '</div></div>';
+  }
+  container.innerHTML =
+    '<div style="margin-top:10px;border:1px solid var(--nh-navy);border-radius:8px;overflow:hidden">' +
+      '<div style="background:var(--nh-navy);color:#fff;padding:8px 12px;font-size:13px;font-weight:700">' +
+        'Campaign brief — enter these in Brand Central</div>' +
+      '<div style="padding:10px 12px">' +
+        row('Campaign name', br.campaign_name) +
+        row('Platform', br.platform) +
+        row('Campaign type', br.campaign_type) +
+        row('Target SKU', br.target_sku) +
+        row('Cities', (br.target_cities||[]).join(', ') || '—') +
+        row('Duration', br.duration_days + ' days') +
+        row('Daily budget', '₹' + (br.daily_budget_inr||0).toLocaleString('en-IN')) +
+        row('Total budget', '₹' + (br.total_budget_inr||0).toLocaleString('en-IN')) +
+        row('Target ROAS', br.target_roas) +
+        row('Keywords', (br.suggested_keywords||[]).join(', ')) +
+        '<div style="font-size:12px;margin-top:8px;background:var(--nh-gray-bg);padding:7px 9px;border-radius:5px">' +
+          escapeHtml(br.format_note||'') + '</div>' +
+        '<div class="muted" style="font-size:11px;margin-top:8px">Basis: ' +
+          'CM ₹' + (ba.platform_cm_per_can!=null?ba.platform_cm_per_can:'—') + '/can · ' +
+          'observed ₹' + (ba.observed_daily_revenue||0).toLocaleString('en-IN') + '/day · ' +
+          'window ' + escapeHtml((ba.window&&ba.window.from)||'') + ' → ' + escapeHtml((ba.window&&ba.window.to)||'') +
+          ((ba.excluded_for_stock_risk||[]).length ? ' · excluded for stock risk: ' + escapeHtml(ba.excluded_for_stock_risk.join(', ')) : '') +
+        '</div>' +
+        '<div class="alert medium" style="margin:10px 0 0"><div class="sev">Manual step</div><div class="msg">' +
+          escapeHtml((b.execution&&b.execution.note)||'') + '</div></div>' +
+      '</div>' +
+    '</div>';
 }
 
 function renderRecommendations(el) {
@@ -4644,6 +4696,22 @@ function wireRecActions_(el) {
       alert('Failed: ' + (e.message || e));
     });
   }
+
+  Array.prototype.forEach.call(el.querySelectorAll('.rec-brief'), function(b) {
+    b.addEventListener('click', function() {
+      var id = b.getAttribute('data-id');
+      var card = el.querySelector('[data-rec="' + id + '"]');
+      var out = card ? card.querySelector('.rec-result') : null;
+      b.disabled = true; b.textContent = 'Building…';
+      api('campaignBrief', { rec_id: id, days: 30 }).then(function(res) {
+        b.disabled = false; b.textContent = 'Build brief';
+        if (out) renderCampaignBrief_(out, res);
+      }).catch(function(e) {
+        b.disabled = false; b.textContent = 'Build brief';
+        if (out) out.innerHTML = '<div class="alert high" style="margin:8px 0 0"><div class="sev">Error</div><div class="msg">' + escapeHtml(e.message||e) + '</div></div>';
+      });
+    });
+  });
 
   Array.prototype.forEach.call(el.querySelectorAll('.rec-approve'), function(b) {
     b.addEventListener('click', function(){ decide(b, 'approved'); });
