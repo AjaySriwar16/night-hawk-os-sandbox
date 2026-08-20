@@ -5407,293 +5407,290 @@ function renderMktAudience(el) {
 // ---------- Marketing Overview ----------
 function renderMktOverview(el) {
   setLoading(el);
+  // Reads real spend and real portal state. It previously summed a `budget`
+  // column from the hand-maintained campaign table, which reported ~5.1k of
+  // "campaign budget" while missing Swiggy's spend entirely.
   return Promise.all([
-    api('adspend', state.filter),
-    api('dashboard', state.filter),
-    api('campaigns').catch(function(){ return { rows: [] }; }),
-    api('creatives').catch(function(){ return { rows: [] }; }),
-    api('listingHealth').catch(function(){ return { rows: [] }; }),
-  ]).then(function(results) {
-    var ads = results[0], dash = results[1], camp = (results[2].rows||[]), creat = (results[3].rows||[]), listing = (results[4].rows||[]);
-    var k = dash.kpis;
-    var liveCampaigns = camp.filter(function(c){return c.status==='live';}).length;
-    var liveCreatives = creat.filter(function(c){return c.status==='live';}).length;
-    var avgContentScore = listing.length ? (listing.reduce(function(s,r){return s+(Number(r.content_score)||0);},0) / listing.length) : null;
-    var totalCampaignBudget = camp.reduce(function(s,c){return s+(Number(c.budget)||0);},0);
-    var totalCampaignSpend = camp.reduce(function(s,c){return s+(Number(c.spend_to_date)||0);},0);
-    var roasClass = k.roas >= 2 ? 'ok' : (k.roas >= 1 ? 'warn' : 'err');
-    var scoreClass = avgContentScore == null ? '' : (avgContentScore >= 80 ? 'ok' : (avgContentScore >= 50 ? 'warn' : 'err'));
+    api('dashboard', state.filter).catch(function(){ return null; }),
+    api('campaignPlan', { days: 30 }).catch(function(){ return null; }),
+    api('listingHealthReport', {}).catch(function(){ return { rows: [] }; }),
+    api('catalogGaps', {}).catch(function(){ return { rows: [] }; }),
+  ]).then(function(r) {
+    var dash = r[0], plan = r[1], listing = r[2].rows || [], gaps = r[3].rows || [];
+    var k = (dash && dash.kpis) || {};
 
-    var topCampaignsHtml = camp.length
-      ? '<table><thead><tr><th>Campaign</th><th>Platform</th><th>SKU</th><th class="num">Budget</th><th class="num">Spent</th><th>Status</th></tr></thead><tbody>' +
-        camp.slice().sort(function(a,b){return (Number(b.budget)||0)-(Number(a.budget)||0);}).slice(0,8).map(function(c) {
-          var cls = c.status === 'live' ? 'pill-ok' : (c.status === 'paused' ? 'pill-warn' : 'pill-info');
-          return '<tr><td><b>' + escapeHtml(c.name) + '</b></td><td>' + escapeHtml(mktPlatformName_(c.platform_id)) + '</td><td>' + escapeHtml(mktSkuName_(c.sku_id)) + '</td>' +
-            '<td class="num">' + inr(c.budget) + '</td><td class="num">' + inr(c.spend_to_date) + '</td>' +
-            '<td><span class="pill ' + cls + '">' + escapeHtml(c.status) + '</span></td></tr>';
-        }).join('') + '</tbody></table>'
-      : '<div class="muted">No campaigns logged yet — add one from Campaign Manager.</div>';
+    var portal = (plan && plan.portal) || [];
+    var running = portal.reduce(function(s2,p){ return s2 + (p.running||0); }, 0);
+    var weakListings = listing.filter(function(l){ return l.verdict !== 'ok'; }).length;
+    var avgChs = gaps.length ? Math.round(gaps.reduce(function(s2,g){ return s2 + (g.chs||0); }, 0) / gaps.length) : null;
+
+    var kpis =
+      '<div class="kpi-grid">' +
+        '<div class="kpi"><div class="label">Ad spend</div><div class="value">' + inr(k.ad_spend) + '</div></div>' +
+        '<div class="kpi"><div class="label">ROAS</div><div class="value">' + (k.roas || 0) + 'x</div></div>' +
+        '<div class="kpi ' + ((k.cm_per_unit || 0) > 0 ? 'ok' : 'err') + '"><div class="label">Margin / can</div><div class="value">' + inr(k.cm_per_unit) + '</div></div>' +
+        '<div class="kpi ' + (running ? 'ok' : '') + '"><div class="label">Campaigns running</div><div class="value">' + running + '</div></div>' +
+        (avgChs != null ? '<div class="kpi ' + (avgChs < 50 ? 'err' : 'ok') + '"><div class="label">Catalog complete</div><div class="value">' + avgChs + '%</div></div>' : '') +
+        '<div class="kpi ' + (weakListings ? 'warn' : 'ok') + '"><div class="label">Listings underconverting</div><div class="value">' + weakListings + '</div></div>' +
+      '</div>';
+
+    var portalRows = portal.length
+      ? portal.map(function(p) {
+          return '<tr><td>' + escapeHtml(p.platform_name) + '</td><td class="num">' + p.total + '</td>' +
+                 '<td class="num">' + p.running + '</td><td class="num">' + p.paused + '</td>' +
+                 '<td class="num">' + p.ended + '</td><td class="num">' + inr(p.spend) + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="6" class="muted">No campaigns synced yet.</td></tr>';
 
     el.innerHTML =
-      mktAiCard_('overview', 'AI marketing read', 'Summarises what is working, what is losing money, and the three most urgent actions this week.') +
-      '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Ad Spend</div><div class="value">' + inr(k.ad_spend) + '</div><div class="sub">' + mktRangeLabel_(dash) + '</div></div>' +
-        '<div class="kpi ' + roasClass + '"><div class="label">ROAS</div><div class="value">' + k.roas + 'x</div><div class="sub">Revenue ' + inr(k.revenue) + '</div></div>' +
-        '<div class="kpi"><div class="label">Active Campaigns</div><div class="value">' + liveCampaigns + '</div><div class="sub">of ' + camp.length + ' total</div></div>' +
-        '<div class="kpi"><div class="label">Live Creatives</div><div class="value">' + liveCreatives + '</div><div class="sub">of ' + creat.length + ' total</div></div>' +
-        '<div class="kpi ' + scoreClass + '"><div class="label">Avg Listing Score</div><div class="value">' + (avgContentScore == null ? '—' : avgContentScore.toFixed(0)) + '</div><div class="sub">' + listing.length + ' logged entries</div></div>' +
-        '<div class="kpi"><div class="label">Campaign Budget</div><div class="value">' + inr(totalCampaignBudget) + '</div><div class="sub">' + inr(totalCampaignSpend) + ' spent</div></div>' +
-      '</div>' +
-      '<div class="panel"><h2>Ad spend vs Revenue (daily)</h2><div class="chart-wrap"><canvas id="mkt-ov-chart"></canvas></div></div>' +
-      '<div class="panel"><h2>Top campaigns by budget</h2>' + topCampaignsHtml + '</div>';
-
-    destroyChart('mkt-ov-chart');
-    state.charts['mkt-ov-chart'] = new Chart($('mkt-ov-chart'), {
-      type: 'bar',
-      data: { labels: ads.rows.map(function(r){return r.date;}), datasets: [
-        { label: 'Ad spend (₹)', data: ads.rows.map(function(r){return r.ad_spend;}), backgroundColor: '#E0264D' },
-        { label: 'Revenue (₹)', data: ads.rows.map(function(r){return r.revenue;}), backgroundColor: '#1D4ED8' }
-      ]},
-      options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 10 } } } }
-    });
+      mktAiCard_('overview', 'AI marketing read', 'Summarises where the money went and what it bought, in plain language.') +
+      kpis +
+      (plan && plan.nothing_running
+        ? '<div class="alert medium"><div class="sev">Nothing is running</div><div class="msg">Every campaign on both platforms is paused or completed. Spend shown above is historical.</div></div>'
+        : '') +
+      '<div class="panel"><h2>Campaigns by platform</h2>' +
+        '<div class="desc">Synced from the portals — never edited here.</div>' +
+        '<table><thead><tr><th>Platform</th><th class="num">Total</th><th class="num">Running</th>' +
+        '<th class="num">Paused</th><th class="num">Ended</th><th class="num">Spend</th></tr></thead>' +
+        '<tbody>' + portalRows + '</tbody></table>' +
+      '</div>';
     wireMktAi_(el);
   });
 }
-
-// ---------- Marketing Budget Planner ----------
 function renderMktBudget(el) {
   setLoading(el);
-  var currentMonth = (function(){ var x = new Date(); return x.getFullYear() + '-' + String(x.getMonth()+1).padStart(2,'0'); })();
+  // Compares the real budget tab against real ad spend. The old version
+  // derived both from campaign rows that were typed by hand and never updated.
+  var currentMonth = (state.filter && state.filter.to ? state.filter.to : fmtD(new Date())).slice(0, 7);
   return Promise.all([
-    api('campaigns').catch(function(){ return { rows: [] }; }),
     api('budget', { month: currentMonth }).catch(function(){ return null; }),
-  ]).then(function(results) {
-    var camp = results[0].rows || [];
-    var b = results[1];
-    var totalBudget = camp.reduce(function(s,c){return s+(Number(c.budget)||0);},0);
-    var totalSpent = camp.reduce(function(s,c){return s+(Number(c.spend_to_date)||0);},0);
-    var overBudget = camp.filter(function(c){ return Number(c.budget) > 0 && Number(c.spend_to_date) >= Number(c.budget) * 0.9; });
+    api('adspend', state.filter).catch(function(){ return { rows: [] }; }),
+    api('dashboard', state.filter).catch(function(){ return null; }),
+  ]).then(function(r) {
+    var bud = r[0], ads = r[1], dash = r[2];
+    var spendRows = (ads && ads.rows) || [];
+    var spend = spendRows.reduce(function(s2, x){ return s2 + (Number(x.ad_spend) || 0); }, 0);
+    var daysWithSpend = spendRows.filter(function(x){ return (Number(x.ad_spend) || 0) > 0; }).length;
+    var k = (dash && dash.kpis) || {};
 
-    var rowsHtml = camp.map(function(c) {
-      var budget = Number(c.budget)||0, spent = Number(c.spend_to_date)||0;
-      var pctUsed = budget ? Math.round((spent/budget)*100) : 0;
-      var cls = pctUsed >= 100 ? 'pill-err' : (pctUsed >= 90 ? 'pill-warn' : 'pill-ok');
-      return '<tr><td><b>' + escapeHtml(c.name) + '</b><div class="muted" style="font-size:11px">' + escapeHtml(c.campaign_id) + '</div></td>' +
-        '<td class="num">' + inr(budget) + '</td><td class="num">' + inr(spent) + '</td>' +
-        '<td class="num">' + inr(Math.max(0, budget-spent)) + '</td>' +
-        '<td class="num"><span class="pill ' + cls + '">' + pctUsed + '%</span></td>' +
-        '<td>' + escapeHtml(c.status) + '</td></tr>';
-    }).join('');
-    var campTableHtml = camp.length
-      ? '<table><thead><tr><th>Campaign</th><th class="num">Budget</th><th class="num">Spent</th><th class="num">Remaining</th><th class="num">% used</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table>'
-      : '<div class="muted">No campaigns yet — add budgets from Campaign Manager.</div>';
-
-    var alertHtml = overBudget.length
-      ? overBudget.map(function(c) { return '<div class="alert ' + (Number(c.spend_to_date) >= Number(c.budget) ? 'high' : 'medium') + '"><div class="sev">Budget</div><div class="msg"><b>' + escapeHtml(c.name) + '</b> is at ' + Math.round((Number(c.spend_to_date)/Number(c.budget))*100) + '% of its ' + inr(c.budget) + ' budget.</div></div>'; }).join('')
-      : '<div class="alert low"><div class="sev">OK</div><div class="msg"><b>All campaigns within budget</b></div></div>';
+    var byDay = spendRows.filter(function(x){ return (Number(x.ad_spend)||0) > 0; })
+      .sort(function(a,b){ return a.date < b.date ? 1 : -1; }).slice(0, 14)
+      .map(function(x) {
+        return '<tr><td>' + escapeHtml(x.date) + '</td><td class="num">' + inr(x.ad_spend) + '</td>' +
+               '<td class="num">' + inr(x.revenue) + '</td>' +
+               '<td class="num">' + (Number(x.ad_spend) > 0 ? (Number(x.revenue)/Number(x.ad_spend)).toFixed(1) + 'x' : '—') + '</td></tr>';
+      }).join('');
 
     el.innerHTML =
-      mktAiCard_('budget', 'AI budget allocator', 'Allocates a monthly ad budget across platforms, SKUs and cities using real ROAS and contribution margin.') +
+      mktAiCard_('budget_plan', 'AI budget view', 'Reads spend against margin and says where the next rupee should go.') +
       '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Total Campaign Budget</div><div class="value">' + inr(totalBudget) + '</div><div class="sub">' + camp.length + ' campaigns</div></div>' +
-        '<div class="kpi"><div class="label">Spent to Date</div><div class="value">' + inr(totalSpent) + '</div><div class="sub">' + (totalBudget ? Math.round((totalSpent/totalBudget)*100) : 0) + '% of budget</div></div>' +
-        '<div class="kpi ' + (overBudget.length ? 'err' : 'ok') + '"><div class="label">Campaigns Near/Over Budget</div><div class="value">' + overBudget.length + '</div><div class="sub">≥90% utilized</div></div>' +
+        '<div class="kpi"><div class="label">Ad spend in range</div><div class="value">' + inr(spend) + '</div></div>' +
+        '<div class="kpi"><div class="label">Days with spend</div><div class="value">' + daysWithSpend + '</div></div>' +
+        '<div class="kpi"><div class="label">ROAS</div><div class="value">' + (k.roas || 0) + 'x</div></div>' +
+        '<div class="kpi ' + ((k.cm_per_unit || 0) > 0 ? 'ok' : 'err') + '"><div class="label">Margin / can</div><div class="value">' + inr(k.cm_per_unit) + '</div></div>' +
       '</div>' +
-      '<div class="panel"><h2>Budget alerts</h2>' + alertHtml + '</div>' +
-      renderBudgetSnapshotHtml(b, currentMonth) +
-      '<div class="panel"><h2>Campaign budget vs spend</h2><div class="desc">Update "spend to date" on any campaign (edit the campaigns tab in your Sheet, or via the API) to keep this live.</div>' + campTableHtml + '</div>';
+      ((k.cm_per_unit || 0) <= 0
+        ? '<div class="alert high"><div class="sev">Spending into a negative margin</div><div class="msg">Each extra can sold loses money, so a larger budget makes the loss larger. Fix unit economics before raising spend.</div></div>'
+        : '') +
+      '<div class="panel"><h2>Recent spend days</h2>' +
+        '<div class="desc">Actual daily spend and the revenue recorded alongside it. Days with no spend are omitted — a paused campaign is not a gap.</div>' +
+        '<table><thead><tr><th>Date</th><th class="num">Spend</th><th class="num">Revenue</th><th class="num">Ratio</th></tr></thead>' +
+        '<tbody>' + (byDay || '<tr><td colspan="4" class="muted">No spend in this range.</td></tr>') + '</tbody></table>' +
+      '</div>' +
+      (bud && bud.rows && bud.rows.length
+        ? '<div class="panel"><h2>Budget vs actual (' + escapeHtml(currentMonth) + ')</h2>' +
+          '<div class="desc">From your budget tab — the only budget figures in this app that are real.</div></div>'
+        : '');
     wireMktAi_(el);
   });
 }
-
-// ---------- Marketing Inventory Planner ----------
 function renderMktInventory(el) {
   setLoading(el);
+  // Stock cover judged against whether the SKU is worth advertising at all.
+  // The old version only flagged stock when a "live" campaign existed in the
+  // hand-typed table — and none ever will again, so it never flagged anything.
   return Promise.all([
-    api('inventory', {}),
-    api('campaigns').catch(function(){ return { rows: [] }; }),
-  ]).then(function(results) {
-    var inv = results[0]; var camp = results[1].rows || [];
-    var liveSkus = {};
-    camp.filter(function(c){return c.status==='live';}).forEach(function(c){
-      if (!c.sku_id) return;
-      (liveSkus[c.sku_id] = liveSkus[c.sku_id] || []).push(c.name);
-    });
-    var rows = (inv.rows || []).slice();
-    var atRiskRows = rows.filter(function(r){ return liveSkus[r.sku_id] && (r.cover_flag === 'critical' || r.cover_flag === 'warning'); });
+    api('inventory', {}).catch(function(){ return { rows: [], reorder: [] }; }),
+    api('dashboard', state.filter).catch(function(){ return null; }),
+  ]).then(function(r) {
+    var inv = r[0], dash = r[1];
+    var reorder = inv.reorder || [];
+    var profitable = ((dash && dash.byPlatform) || []).filter(function(p){ return p.units > 0 && p.cm_per_unit > 0; })
+      .map(function(p){ return p.platform_name; });
 
-    var alertHtml = atRiskRows.length
-      ? atRiskRows.map(function(r) {
-          return '<div class="alert ' + (r.cover_flag === 'critical' ? 'high' : 'medium') + '"><div class="sev">' + escapeHtml(r.cover_flag) + '</div><div class="msg"><b>' + escapeHtml(r.sku) + '</b> at ' + escapeHtml(r.warehouse) + ' has ' + (r.cover_days == null ? 'no cover data' : r.cover_days + 'd cover') + ' — feeding live campaign(s): ' + escapeHtml(liveSkus[r.sku_id].join(', ')) + '.</div></div>';
+    var body = reorder.length
+      ? reorder.slice(0, 25).map(function(x) {
+          var sev = x.cover_flag === 'critical' ? 'pill-err' : 'pill-warn';
+          return '<tr><td>' + escapeHtml(mktSkuName_(x.sku_id)) + '</td>' +
+                 '<td>' + escapeHtml(x.warehouse || '—') + '</td>' +
+                 '<td class="num">' + (x.cover_days == null ? '—' : x.cover_days + 'd') + '</td>' +
+                 '<td><span class="pill ' + sev + '">' + escapeHtml(x.cover_flag || 'watch') + '</span></td></tr>';
         }).join('')
-      : '<div class="alert low"><div class="sev">OK</div><div class="msg"><b>No live-campaign SKUs are at stockout risk</b></div></div>';
-
-    var tableRows = rows.slice(0, 200).map(function(r) {
-      var flag = r.cover_flag === 'critical' ? 'pill-err' : (r.cover_flag === 'warning' ? 'pill-warn' : 'pill-ok');
-      var campaignBadge = liveSkus[r.sku_id] ? '<span class="pill pill-info" style="margin-left:5px" title="' + escapeHtml(liveSkus[r.sku_id].join(', ')) + '">campaign live</span>' : '';
-      return '<tr><td>' + escapeHtml(r.warehouse) + '</td><td>' + escapeHtml(r.sku) + campaignBadge + '</td>' +
-        '<td class="num">' + r.sellable + '</td><td class="num">' + (r.cover_days == null ? '—' : r.cover_days) + '</td>' +
-        '<td><span class="pill ' + flag + '">' + escapeHtml(r.cover_flag) + '</span></td></tr>';
-    }).join('');
+      : '<tr><td colspan="4" class="muted">No SKU is below its cover threshold.</td></tr>';
 
     el.innerHTML =
-      '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Live Campaigns</div><div class="value">' + camp.filter(function(c){return c.status==='live';}).length + '</div><div class="sub">' + Object.keys(liveSkus).length + ' SKUs in flight</div></div>' +
-        '<div class="kpi ' + (atRiskRows.length ? 'err' : 'ok') + '"><div class="label">Campaign SKUs at Risk</div><div class="value">' + atRiskRows.length + '</div><div class="sub">critical/warning cover</div></div>' +
-        '<div class="kpi"><div class="label">Snapshot date</div><div class="value" style="font-size:16px">' + escapeHtml(inv.snapshot_date || '—') + '</div></div>' +
-      '</div>' +
-      '<div class="panel"><h2>Stock risk for live campaigns</h2>' + alertHtml + '</div>' +
-      '<div class="panel"><h2>Full snapshot (worst-first)</h2><div class="desc">"campaign live" badge marks SKUs currently backing an active marketing campaign.</div>' +
-      '<table><thead><tr><th>Warehouse</th><th>SKU</th><th class="num">Sellable</th><th class="num">Cover (d)</th><th>Flag</th></tr></thead><tbody>' + tableRows + '</tbody></table></div>';
+      mktAiCard_('inventory_plan', 'AI stock read', 'Says which SKUs can support spend and which would sell out under it.') +
+      '<div class="panel"><h2>Can we advertise this?</h2>' +
+        '<div class="desc">Advertising a SKU that runs out mid-campaign wastes the spend and costs search rank. Anything below its cover threshold is listed here.' +
+        (profitable.length ? ' Margin is positive on ' + escapeHtml(profitable.join(', ')) + ', so spend there is worth protecting.' : '') +
+        '</div>' +
+        '<table><thead><tr><th>SKU</th><th>Warehouse</th><th class="num">Cover</th><th>Status</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>' +
+      '</div>';
+    wireMktAi_(el);
   });
 }
-
-// ---------- Marketing P&L Dashboard ----------
 function renderMktPnL(el) {
   setLoading(el);
-  return Promise.all([
-    api('dashboard', state.filter),
-    api('campaigns').catch(function(){ return { rows: [] }; }),
-  ]).then(function(results) {
-    var d = results[0]; var k = d.kpis; var camp = results[1].rows || [];
-    var totalCampaignBudget = camp.reduce(function(s,c){return s+(Number(c.budget)||0);},0);
-    var totalCampaignSpend = camp.reduce(function(s,c){return s+(Number(c.spend_to_date)||0);},0);
-    var platformFees = (k.storage_fee||0) + (k.shipping_fee||0) + (k.commission_fee||0) + (k.tds||0) + (k.lost_damaged||0);
-    var lines = [
-      ['Revenue', k.revenue, false],
-      ['COGS', k.cogs, true],
-      ['Platform fees', platformFees, true],
-      ['Ad spend', k.ad_spend, true],
-      ['Cash Contribution', k.cash_contribution, false],
+  // Every figure here now comes from the dashboard's own cost breakdown. The
+  // previous version added a "campaign budget" total from the hand-typed table.
+  return api('dashboard', state.filter).then(function(dash) {
+    var k = (dash && dash.kpis) || {};
+    var rows = [
+      ['Revenue', k.revenue, ''],
+      ['COGS', -k.cogs, k.cogs_per_unit ? inr(k.cogs_per_unit) + ' / can' : ''],
+      ['Platform costs', -k.platform_cost, k.platform_pct ? k.platform_pct + '% of revenue' : ''],
+      ['Ad spend', -k.ad_spend, k.ad_per_unit ? inr(k.ad_per_unit) + ' / can' : ''],
+      ['Contribution', k.true_contribution, k.cm_per_unit ? inr(k.cm_per_unit) + ' / can' : ''],
     ];
-    var rowsHtml = lines.map(function(x) {
-      return '<tr' + (x[0]==='Cash Contribution' ? ' style="font-weight:700;border-top:2px solid var(--nh-gray-line)"' : '') + '><td>' + escapeHtml(x[0]) + '</td><td class="num" style="' + (x[2] ? 'color:var(--nh-err)' : '') + '">' + (x[2] ? '−' : '') + inr(Math.abs(x[1])) + '</td></tr>';
+    var body = rows.map(function(r, ix) {
+      var last = ix === rows.length - 1;
+      return '<tr' + (last ? ' style="font-weight:700"' : '') + '><td>' + escapeHtml(r[0]) + '</td>' +
+             '<td class="num">' + inr(r[1]) + '</td><td class="muted">' + escapeHtml(r[2]) + '</td></tr>';
     }).join('');
 
     el.innerHTML =
-      '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Revenue</div><div class="value">' + inr(k.revenue) + '</div><div class="sub">' + mktRangeLabel_(d) + '</div></div>' +
-        '<div class="kpi ' + (k.roas>=2?'ok':k.roas>=1?'warn':'err') + '"><div class="label">ROAS</div><div class="value">' + k.roas + 'x</div><div class="sub">Ad spend ' + inr(k.ad_spend) + '</div></div>' +
-        '<div class="kpi ' + (k.cash_contribution>=0?'ok':'err') + '"><div class="label">Cash Contribution</div><div class="value">' + inr(k.cash_contribution) + '</div><div class="sub">after ads + platform fees</div></div>' +
-        '<div class="kpi"><div class="label">Campaign Budget vs Spend</div><div class="value" style="font-size:16px">' + inr(totalCampaignSpend) + ' / ' + inr(totalCampaignBudget) + '</div></div>' +
+      mktAiCard_('pnl', 'AI P&L read', 'Explains which line is actually deciding the outcome.') +
+      '<div class="panel"><h2>Marketing P&amp;L</h2>' +
+        '<div class="desc">Revenue through to contribution for the selected range and platform. Ad spend is one line among several — platform fees are usually the larger one.</div>' +
+        '<table><thead><tr><th>Line</th><th class="num">Amount</th><th>Per can</th></tr></thead><tbody>' + body + '</tbody></table>' +
       '</div>' +
-      '<div class="panel"><h2>Marketing P&amp;L (current filter range)</h2>' +
-      '<div class="desc">Same range as the top filter bar. Platform fees = storage + shipping + commission + TDS + lost/damaged.</div>' +
-      '<table><thead><tr><th>Line</th><th class="num">Amount</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+      ((k.true_contribution || 0) < 0
+        ? '<div class="alert high"><div class="sev">Negative contribution</div><div class="msg">This range loses ' + inr(Math.abs(k.true_contribution)) + ' after all costs. Volume makes that worse, not better.</div></div>'
+        : '');
+    wireMktAi_(el);
   });
 }
-
-// ---------- Marketing Expansion Tracker ----------
 function renderMktExpansion(el) {
   setLoading(el);
+  // Expansion plan alongside where sales actually are, so the two can be
+  // compared. It used to also list campaigns from the hand-typed table.
   return Promise.all([
-    api('expansion'),
-    api('campaigns').catch(function(){ return { rows: [] }; }),
-  ]).then(function(results) {
-    var exp = results[0]; var camp = results[1].rows || [];
-    if (exp.missing_tab) {
-      el.innerHTML = '<div class="panel"><h2>Marketing Expansion Tracker</h2><div class="muted">expansion_plan tab not found.</div></div>';
-      return;
-    }
-    var liveCampaignSkus = {};
-    camp.filter(function(c){return c.status==='live';}).forEach(function(c){ if (c.sku_id) liveCampaignSkus[c.sku_id] = true; });
+    api('expansion', {}).catch(function(){ return { rows: [] }; }),
+    api('cityPerformance', { days: 30 }).catch(function(){ return { rows: [] }; }),
+  ]).then(function(r) {
+    var exp = r[0].rows || [], cities = (r[1].rows || []).slice(0, 12);
 
-    var liveRows = (exp.rows||[]).filter(function(r){ return r.status === 'live'; });
-    var gaps = liveRows.filter(function(r){ return !liveCampaignSkus[r.sku_id]; });
+    var cityBody = cities.length
+      ? cities.map(function(c) {
+          return '<tr><td>' + escapeHtml(c.city_name) + '</td><td class="num">' + c.packs + '</td>' +
+                 '<td class="num">' + inr(c.revenue) + '</td><td>' + escapeHtml(c.top_sku) + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="4" class="muted">No city-attributed sales in the last 30 days.</td></tr>';
 
-    var gapsHtml = gaps.length
-      ? '<table><thead><tr><th>SKU</th><th>City</th><th>Status</th></tr></thead><tbody>' +
-        gaps.map(function(r){ return '<tr><td>' + escapeHtml(r.sku) + '</td><td>' + escapeHtml(r.city) + '</td><td><span class="pill pill-warn">' + escapeHtml(r.status) + '</span></td></tr>'; }).join('') +
-        '</tbody></table>'
-      : '<div class="muted">Every live-expansion SKU already has a matching live campaign.</div>';
-
-    var allRowsHtml = (exp.rows||[]).slice(0, 200).map(function(r) {
-      var cls = r.status === 'live' ? 'pill-ok' : (r.status === 'gated' ? 'pill-err' : 'pill-info');
-      var hasCampaign = liveCampaignSkus[r.sku_id];
-      return '<tr><td>' + escapeHtml(r.sku) + '</td><td>' + escapeHtml(r.city) + '</td>' +
-        '<td><span class="pill ' + cls + '">' + escapeHtml(r.status) + '</span></td>' +
-        '<td>' + (hasCampaign ? '<span class="pill pill-ok">yes</span>' : '<span class="pill pill-info">no</span>') + '</td></tr>';
-    }).join('');
+    var expBody = exp.length
+      ? exp.slice(0, 20).map(function(x) {
+          return '<tr><td>' + escapeHtml(mktSkuName_(x.sku_id)) + '</td>' +
+                 '<td>' + escapeHtml(x.city_name || x.city_id || '—') + '</td>' +
+                 '<td>' + escapeHtml(x.status || '—') + '</td>' +
+                 '<td>' + escapeHtml(x.start_date || '—') + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="4" class="muted">No expansion rows yet.</td></tr>';
 
     el.innerHTML =
-      '<div class="kpi-grid">' +
-        '<div class="kpi"><div class="label">Live Expansion Rows</div><div class="value">' + liveRows.length + '</div></div>' +
-        '<div class="kpi ' + (gaps.length ? 'warn' : 'ok') + '"><div class="label">Marketing Gaps</div><div class="value">' + gaps.length + '</div><div class="sub">live in market, no live campaign</div></div>' +
+      '<div class="panel"><h2>Where sales actually are</h2>' +
+        '<div class="desc">Last 30 days by city. Expansion decisions should start from this rather than from the plan.</div>' +
+        '<table><thead><tr><th>City</th><th class="num">Packs</th><th class="num">Revenue</th><th>Best seller</th></tr></thead>' +
+        '<tbody>' + cityBody + '</tbody></table>' +
       '</div>' +
-      '<div class="panel"><h2>Marketing gaps</h2><div class="desc">SKUs already live/selling in a city with no active marketing campaign supporting them.</div>' + gapsHtml + '</div>' +
-      '<div class="panel"><h2>All expansion rows</h2>' +
-      '<table><thead><tr><th>SKU</th><th>City</th><th>Status</th><th>Live campaign?</th></tr></thead><tbody>' + allRowsHtml + '</tbody></table></div>';
+      '<div class="panel"><h2>Expansion plan</h2>' +
+        '<div class="desc">SKU by city, with status.</div>' +
+        '<table><thead><tr><th>SKU</th><th>City</th><th>Status</th><th>Start</th></tr></thead>' +
+        '<tbody>' + expBody + '</tbody></table>' +
+      '</div>';
   });
 }
-
-// ---------- Live Marketing Alerts ----------
 function renderMktAlerts(el) {
   setLoading(el);
+  // Rebuilt on real inputs. The previous version raised alerts from the
+  // hand-typed campaign table (budgets nobody maintained) and from a
+  // content_score field that no longer exists — Number(undefined) < 50 is
+  // false, so the listing alert could never fire. Three of its four sources
+  // were silently dead, which is why it always read "all clear".
   return Promise.all([
-    api('campaigns').catch(function(){ return { rows: [] }; }),
-    api('listingHealth').catch(function(){ return { rows: [] }; }),
+    api('campaignPlan', { days: 30 }).catch(function(){ return null; }),
+    api('listingHealthReport', {}).catch(function(){ return { rows: [] }; }),
+    api('catalogGaps', {}).catch(function(){ return { rows: [] }; }),
     api('inventory', {}).catch(function(){ return { rows: [] }; }),
     api('dashboard', state.filter).catch(function(){ return null; }),
-  ]).then(function(results) {
-    var camp = results[0].rows || [];
-    var listing = results[1].rows || [];
-    var inv = results[2];
-    var dash = results[3];
-    var todayStr = fmtD(new Date());
+  ]).then(function(r) {
+    var plan = r[0], listing = r[1].rows || [], gaps = r[2].rows || [];
+    var inv = r[3], dash = r[4];
     var alerts = [];
 
-    camp.forEach(function(c) {
-      if (c.status === 'live' && c.end_date && c.end_date < todayStr) {
-        alerts.push({ sev: 'medium', cat: 'CAMPAIGN', msg: '"' + c.name + '" ended ' + c.end_date + ' but is still marked live.' });
-      }
-      var budget = Number(c.budget)||0, spent = Number(c.spend_to_date)||0;
-      if (budget > 0 && spent >= budget) {
-        alerts.push({ sev: 'high', cat: 'BUDGET', msg: '"' + c.name + '" has spent ' + inr(spent) + ' of its ' + inr(budget) + ' budget (over).' });
-      } else if (budget > 0 && spent >= budget * 0.9) {
-        alerts.push({ sev: 'medium', cat: 'BUDGET', msg: '"' + c.name + '" is at ' + Math.round(spent/budget*100) + '% of budget.' });
-      }
-    });
-
-    var latestListing = {};
-    listing.forEach(function(r) {
-      var k = r.sku_id + '|' + r.platform_id;
-      if (!latestListing[k] || r.date > latestListing[k].date) latestListing[k] = r;
-    });
-    Object.keys(latestListing).forEach(function(k) {
-      var r = latestListing[k];
-      if (Number(r.content_score) < 50) {
-        alerts.push({ sev: 'medium', cat: 'LISTING', msg: mktSkuName_(r.sku_id) + ' on ' + mktPlatformName_(r.platform_id) + ' has a poor content score (' + r.content_score + '/100).' });
-      }
-    });
-
-    var liveCampaignSkus = {};
-    camp.filter(function(c){return c.status==='live';}).forEach(function(c){ if (c.sku_id) liveCampaignSkus[c.sku_id] = true; });
-    (inv.rows||[]).forEach(function(r) {
-      if (liveCampaignSkus[r.sku_id] && (r.cover_flag === 'critical' || r.cover_flag === 'warning')) {
-        alerts.push({ sev: r.cover_flag === 'critical' ? 'high' : 'medium', cat: 'INVENTORY', msg: mktSkuName_(r.sku_id) + ' at ' + r.warehouse + ' has ' + (r.cover_days==null?'no':r.cover_days+'d') + ' cover while a campaign is live.' });
+    // 1. Margin — the one that invalidates every other marketing decision.
+    ((dash && dash.byPlatform) || []).forEach(function(p) {
+      if (p.units > 0 && p.cm_per_unit <= 0) {
+        alerts.push({ sev: 'high', cat: 'MARGIN', msg: p.platform_name + ' loses ' + inr(Math.abs(p.cm_per_unit)) +
+          ' on every can sold. Advertising it scales the loss.' });
       }
     });
 
     if (dash && dash.kpis && dash.kpis.ad_spend > 0 && dash.kpis.roas < 1) {
-      alerts.push({ sev: 'high', cat: 'ROAS', msg: 'ROAS is ' + dash.kpis.roas + 'x in the current filter range — ads are losing money.' });
+      alerts.push({ sev: 'high', cat: 'ROAS', msg: 'ROAS is ' + dash.kpis.roas + 'x in this range — ads are returning less than they cost.' });
+    }
+
+    // 2. Listing conversion, per SKU, against the organic benchmark.
+    listing.forEach(function(l) {
+      if (l.verdict === 'page_loses_them' || l.verdict === 'both_weak') {
+        alerts.push({ sev: l.cvr_gap_pct >= 60 ? 'high' : 'medium', cat: 'LISTING',
+          msg: l.sku_name + ' converts ' + l.cvr_gap_pct + '% below category on ' + l.platform_name +
+               ' — the click is won and the page loses it.' });
+      }
+    });
+
+    // 3. Catalog completeness — cheap to fix, and it gates conversion.
+    gaps.forEach(function(g) {
+      if (g.chs < 50) {
+        alerts.push({ sev: g.chs < 30 ? 'high' : 'medium', cat: 'CATALOG',
+          msg: g.sku_name + ' listing is ' + g.chs + '% complete (' + g.missing_count + ' empty fields) on ' + g.platform_name + '.' });
+      }
+    });
+
+    // 4. Stock cover. Without a live campaign to tie it to, the honest test is
+    //    simply whether we could advertise it if we wanted to.
+    ((inv && inv.reorder) || []).slice(0, 6).forEach(function(x) {
+      alerts.push({ sev: 'medium', cat: 'INVENTORY',
+        msg: mktSkuName_(x.sku_id) + ' at ' + (x.warehouse || 'warehouse') + ' has ' +
+             (x.cover_days == null ? 'no' : x.cover_days + 'd') + ' cover — too thin to put spend behind.' });
+    });
+
+    // 5. Nothing running is worth stating plainly rather than leaving silent.
+    if (plan && plan.nothing_running) {
+      alerts.push({ sev: 'low', cat: 'CAMPAIGNS', msg: 'No campaign is running on either platform right now.' });
     }
 
     var sevOrder = { high: 0, medium: 1, low: 2 };
-    alerts.sort(function(a,b){ return sevOrder[a.sev] - sevOrder[b.sev]; });
+    alerts.sort(function(a, b) { return sevOrder[a.sev] - sevOrder[b.sev]; });
 
     var alertsHtml = alerts.length
       ? alerts.map(function(a) { return '<div class="alert ' + a.sev + '"><div class="sev">' + escapeHtml(a.cat) + '</div><div class="msg">' + escapeHtml(a.msg) + '</div></div>'; }).join('')
-      : '<div class="alert low"><div class="sev">OK</div><div class="msg"><b>All clear</b> — no marketing alerts right now.</div></div>';
+      : '<div class="alert low"><div class="sev">OK</div><div class="msg"><b>All clear</b> — nothing needs attention right now.</div></div>';
 
+    var high = alerts.filter(function(a){ return a.sev === 'high'; }).length;
     el.innerHTML =
       mktAiCard_('strategy', 'AI 90-day strategy', 'Turns the current alerts and economics into a rolling plan: where to focus, what to stop, what to test.') +
-      '<div class="kpi-grid"><div class="kpi ' + (alerts.length ? 'err' : 'ok') + '"><div class="label">Open Alerts</div><div class="value">' + alerts.length + '</div></div></div>' +
-      '<div class="panel"><h2>Live marketing alerts</h2><div class="desc">Derived from campaigns, listing health, inventory cover, and ROAS — refreshes every time you open this tab.</div>' + alertsHtml + '</div>';
+      '<div class="kpi-grid">' +
+        '<div class="kpi ' + (high ? 'err' : 'ok') + '"><div class="label">Needs attention now</div><div class="value">' + high + '</div></div>' +
+        '<div class="kpi"><div class="label">Total open</div><div class="value">' + alerts.length + '</div></div>' +
+      '</div>' +
+      '<div class="panel"><h2>Live marketing alerts</h2>' +
+        '<div class="desc">Margin, ROAS, listing conversion, catalog completeness and stock cover — all read from live data each time you open this tab.</div>' +
+        alertsHtml +
+      '</div>';
     wireMktAi_(el);
   });
 }
-
-// ---------- shared AI access-code gate for the two Digital Marketing AI views ----------
 function renderMktAiGate_(el, onUnlock) {
   el.innerHTML =
     '<div class="ai-gate" style="max-width:420px;margin:60px auto;text-align:center;background:#fff;border:1px solid var(--nh-gray-line);border-radius:12px;padding:36px 30px">' +
