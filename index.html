@@ -5267,7 +5267,8 @@ function renderMktCreative(el) {
 // tell you which one you had.
 function renderMktListing(el) {
   setLoading(el);
-  return api('listingHealthReport', {}).then(function(d) {
+  return Promise.all([api('listingHealthReport', {}), api('catalogGaps', {})]).then(function(res) {
+    var d = res[0] || {}, gaps = res[1] || {};
     var rows = d.rows || [];
     var b = d.benchmarks || {};
 
@@ -5279,7 +5280,7 @@ function renderMktListing(el) {
             'This view reads click-through and conversion per SKU from the ads portal. Run the <b>⚡ Sync Swiggy</b> bookmark on the Instamart <b>Ads Dashboard</b> to capture them. ' +
             'Until then there is nothing to report, and inventing a content score would be worse than an empty page.' +
           '</div></div>' +
-        '</div>';
+        '</div>' + catalogGapsHtml_(gaps);
       return;
     }
 
@@ -5313,8 +5314,53 @@ function renderMktListing(el) {
     el.innerHTML =
       '<div class="panel"><h2>Listing Health</h2>' +
         '<div class="desc">Click-through says whether the listing gets chosen in search. Conversion says whether the product page closes the sale. They fail for different reasons and need different fixes, so they are judged separately against the category benchmark.</div>' +
-      '</div>' + cards;
+      '</div>' + cards + catalogGapsHtml_(gaps);
   });
+}
+
+// ---------- Catalog gaps (rendered inside Listing Health) ----------
+// Instamart publishes both a completeness score and the exact empty fields,
+// so the app can say what to write rather than that something is wrong.
+// Suggestions are split by how much the app is entitled to assert: values it
+// can derive, copy it drafts for review, and label facts it refuses to invent.
+function catalogGapsHtml_(d) {
+  var rows = (d && d.rows) || [];
+  if (!rows.length) {
+    return '<div class="panel"><h2>Catalog completeness</h2>' +
+      '<div class="desc">Not captured yet. Run the <b>⚡ Sync Swiggy</b> bookmark on <b>My Catalog</b> to pull the health score and the list of empty fields.</div></div>';
+  }
+  var cls = { auto: 'pill-ok', draft: 'pill-warn', must_supply: 'pill-err', unknown: 'pill-info' };
+  var label = { auto: 'derived', draft: 'draft — review', must_supply: 'you must supply', unknown: 'unrecognised' };
+
+  return rows.map(function(r) {
+    var groups = ['auto', 'draft', 'must_supply', 'unknown'].map(function(k) {
+      var items = (r.suggestions || []).filter(function(s) { return s.cls === k; });
+      if (!items.length) return '';
+      return '<div style="margin-top:12px">' +
+        '<div style="font-weight:700;color:var(--nh-navy);margin-bottom:6px">' +
+          '<span class="pill ' + cls[k] + '">' + label[k] + '</span> ' + items.length + ' field' + (items.length === 1 ? '' : 's') +
+        '</div>' +
+        '<table><thead><tr><th style="width:26%">Field</th><th>' +
+          (k === 'must_supply' ? 'Why the app will not write this' : 'Suggested value') + '</th></tr></thead><tbody>' +
+        items.map(function(s) {
+          return '<tr><td><code>' + escapeHtml(s.field) + '</code></td><td>' +
+                 (s.value ? escapeHtml(s.value) : '<span class="muted">' + escapeHtml(s.note) + '</span>') +
+                 '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }).join('');
+
+    var sev = r.chs < 30 ? 'pill-err' : (r.chs < 60 ? 'pill-warn' : 'pill-ok');
+    return '<div class="panel" style="margin-top:12px">' +
+      '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">' +
+        '<div><b>' + escapeHtml(r.sku_name) + '</b> <span class="muted">· ' + escapeHtml(r.platform_name) + '</span></div>' +
+        '<span class="pill ' + sev + '">health ' + r.chs + '%</span>' +
+      '</div>' +
+      '<div class="muted" style="font-size:12px;margin-top:6px">' +
+        r.must_missing + ' of ' + r.must_total + ' must-have and ' +
+        r.good_missing + ' of ' + r.good_total + ' good-to-have attributes are empty.' +
+      '</div>' + groups +
+    '</div>';
+  }).join('');
 }
 
 // ---------- City Performance ----------
