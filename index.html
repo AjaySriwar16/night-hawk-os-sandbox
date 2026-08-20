@@ -5148,75 +5148,117 @@ function renderMktCrudView_(el, cfg) {
 }
 
 // ---------- Campaign Manager ----------
+// Two questions, in the order an operator actually asks them: what should I
+// run, and what is running. Neither is typed in. The previous version was a
+// CRUD table whose rows had to be maintained by hand, and it had drifted to
+// showing four campaigns as "live" while every real campaign on both portals
+// sat paused — the tab was confidently wrong, which is worse than empty.
 function renderMktCampaigns(el) {
-  var cfg = {
-    aiKind: 'campaign_plan', aiTitle: 'AI campaign planner', aiSubtitle: 'Reads your real margin, ROAS and stock cover, then proposes campaigns worth running — and names the ones that would lose money.', title: 'Campaign Manager', tabName: 'campaigns', singular: 'campaign', idField: 'campaign_id',
-    listAction: 'campaigns', createAction: 'createCampaign', deleteAction: 'deleteCampaign',
-    desc: 'Track every paid campaign across platforms — budget, spend, status, and which SKU/city it’s driving.',
-    fields: [
-      { key: 'name', label: 'Campaign name', required: true, placeholder: 'e.g. Blinkit Aug Push — Berry Burst' },
-      { key: 'platform_id', label: 'Platform', type: 'select', options: mktPlatformOptions_() },
-      { key: 'sku_id', label: 'SKU', type: 'select', options: mktSkuOptions_() },
-      { key: 'city_id', label: 'City', type: 'select', options: mktCityOptions_() },
-      { key: 'objective', label: 'Objective', placeholder: 'e.g. awareness, conversion, listing boost' },
-      { key: 'start_date', label: 'Start date', type: 'date' },
-      { key: 'end_date', label: 'End date', type: 'date' },
-      { key: 'budget', label: 'Budget (₹)', type: 'number', step: '1' },
-      { key: 'status', label: 'Status', type: 'select', options: [{value:'draft',label:'draft'},{value:'live',label:'live'},{value:'paused',label:'paused'},{value:'completed',label:'completed'}] },
-      { key: 'notes', label: 'Notes', type: 'textarea' },
-    ],
-    columns: [
-      { key: 'campaign_id', label: 'ID' },
-      { key: 'name', label: 'Name' },
-      { key: 'platform_id', label: 'Platform', render: function(r){ return escapeHtml(mktPlatformName_(r.platform_id)); } },
-      { key: 'sku_id', label: 'SKU', render: function(r){ return escapeHtml(mktSkuName_(r.sku_id)); } },
-      { key: 'budget', label: 'Budget', num: true, render: function(r){ return inr(r.budget); } },
-      { key: 'spend_to_date', label: 'Spent', num: true, render: function(r){ return inr(r.spend_to_date); } },
-      { key: 'status', label: 'Status', render: function(r){
-          var cls = r.status === 'live' ? 'pill-ok' : (r.status === 'paused' ? 'pill-warn' : 'pill-info');
-          return '<span class="pill ' + cls + '">' + escapeHtml(r.status) + '</span>';
-        } },
-      { key: 'end_date', label: 'Ends' },
-    ],
-  };
-  return renderMktCrudView_(el, cfg);
+  setLoading(el);
+  return api('campaignPlan', { days: 30 }).then(function(d) {
+    var proposed = d.proposed || [];
+    var portal = d.portal || [];
+    var breached = d.guardrail_breached || [];
+
+    var guard = breached.length
+      ? '<div class="alert high" style="margin-bottom:14px"><div class="sev">Margin guardrail active</div><div class="msg">' +
+          escapeHtml(breached.join(', ')) + ' currently ' + (breached.length > 1 ? 'lose' : 'loses') +
+          ' money on every can sold. Anything that scales spend there is blocked below — advertising a negative margin buys losses faster.' +
+        '</div></div>'
+      : '';
+
+    var running = d.nothing_running
+      ? '<div class="alert medium" style="margin-bottom:14px"><div class="sev">Nothing is running right now</div><div class="msg">' +
+          'Every campaign across both portals is paused or completed. Any spend figures below are historical, not live.' +
+        '</div></div>'
+      : '';
+
+    var propHtml = proposed.length
+      ? proposed.map(function(r) { return recCardHtml_ ? recCardHtml_(r) : mktProposalCard_(r); }).join('')
+      : '<div class="muted">No campaign is worth starting on the current numbers. That is a finding, not an empty state — with margin where it is, the honest recommendation is to fix unit economics before buying traffic.</div>';
+
+    var portalRows = portal.length
+      ? portal.map(function(p) {
+          return '<tr><td>' + escapeHtml(p.platform_name) + '</td>' +
+                 '<td class="num">' + p.total + '</td>' +
+                 '<td class="num">' + (p.running ? '<span class="pill pill-ok">' + p.running + '</span>' : '0') + '</td>' +
+                 '<td class="num">' + p.paused + '</td>' +
+                 '<td class="num">' + p.ended + '</td>' +
+                 '<td class="num">' + inr(p.spend) + '</td>' +
+                 '<td class="num">' + (p.atcs || 0).toLocaleString('en-IN') + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="7" class="muted">No campaigns synced yet — use the Integrations tab to pull them from the portals.</td></tr>';
+
+    el.innerHTML =
+      guard + running +
+      '<div class="panel"><h2>What to run next</h2>' +
+        '<div class="desc">Derived from your real margin per can, ROAS and stock cover over the last 30 days. Each card carries the numbers it was built from, so you can disagree with the reasoning rather than just the answer.</div>' +
+        propHtml +
+      '</div>' +
+
+      '<div class="panel"><h2>What is actually running</h2>' +
+        '<div class="desc">Real campaign state synced from Blinkit Brand Central and Swiggy Instamart. This table is never edited by hand — if it looks wrong, re-sync rather than correcting it here.</div>' +
+        '<table><thead><tr><th>Platform</th><th class="num">Campaigns</th><th class="num">Running</th>' +
+        '<th class="num">Paused</th><th class="num">Ended</th><th class="num">Spend</th><th class="num">ATCs</th></tr></thead>' +
+        '<tbody>' + portalRows + '</tbody></table>' +
+      '</div>';
+  });
+}
+
+// Fallback card used if the Recommendations view's renderer is unavailable.
+function mktProposalCard_(r) {
+  var sev = r.blocked_by_guardrail ? 'pill-err' : 'pill-ok';
+  return '<div class="panel" style="margin-top:10px">' +
+    '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">' +
+      '<div><b>' + escapeHtml(r.title || '') + '</b></div>' +
+      '<span class="pill ' + sev + '">' + escapeHtml(r.blocked_by_guardrail ? 'blocked' : (r.severity || 'action')) + '</span>' +
+    '</div>' +
+    (r.recommended_action ? '<div style="margin-top:6px">' + escapeHtml(r.recommended_action) + '</div>' : '') +
+    (r.risk ? '<div class="muted" style="margin-top:6px;font-size:12px">' + escapeHtml(r.risk) + '</div>' : '') +
+  '</div>';
 }
 
 // ---------- Creative Lab ----------
+// Not an asset tracker. Neither portal exposes creative files, so logging them
+// here could only ever be manual busywork that goes stale. What the portals do
+// expose is how each format performed, and that is enough to say which creative
+// work is worth doing — and to refuse to invent a brief when there is no signal.
 function renderMktCreative(el) {
-  var cfg = {
-    aiKind: 'creative', aiTitle: 'AI creative writer', aiSubtitle: 'Writes ad copy for your best-performing SKUs, several distinct angles rather than variations of one line.', title: 'Creative Lab', tabName: 'creatives', singular: 'creative', idField: 'creative_id',
-    listAction: 'creatives', createAction: 'createCreative', deleteAction: 'deleteCreative',
-    desc: 'Track every ad creative — image, video, banner — its status, and how it’s performing.',
-    fields: [
-      { key: 'name', label: 'Creative name', required: true, placeholder: 'e.g. Berry Burst — gym reel v2' },
-      { key: 'campaign_id', label: 'Campaign', type: 'select', options: [] },
-      { key: 'type', label: 'Type', type: 'select', options: [
-          {value:'image',label:'image'}, {value:'video',label:'video'}, {value:'banner',label:'banner'}, {value:'reel',label:'reel'}, {value:'carousel',label:'carousel'}
-        ] },
-      { key: 'platform_id', label: 'Platform', type: 'select', options: mktPlatformOptions_() },
-      { key: 'status', label: 'Status', type: 'select', options: [{value:'draft',label:'draft'},{value:'live',label:'live'},{value:'paused',label:'paused'}] },
-      { key: 'performance_notes', label: 'Performance notes', type: 'textarea' },
-    ],
-    columns: [
-      { key: 'creative_id', label: 'ID' },
-      { key: 'name', label: 'Name' },
-      { key: 'campaign_id', label: 'Campaign ID' },
-      { key: 'type', label: 'Type' },
-      { key: 'platform_id', label: 'Platform', render: function(r){ return escapeHtml(mktPlatformName_(r.platform_id)); } },
-      { key: 'status', label: 'Status', render: function(r){
-          var cls = r.status === 'live' ? 'pill-ok' : (r.status === 'paused' ? 'pill-warn' : 'pill-info');
-          return '<span class="pill ' + cls + '">' + escapeHtml(r.status) + '</span>';
-        } },
-    ],
-    beforeForm: function() {
-      return api('campaigns').then(function(d) {
-        var f = cfg.fields.filter(function(x){return x.key==='campaign_id';})[0];
-        f.options = mktCampaignOptions_(d.rows);
-      }).catch(function(){});
-    },
-  };
-  return renderMktCrudView_(el, cfg);
+  setLoading(el);
+  return api('creativeBriefs', { days: 30 }).then(function(d) {
+    var briefs = d.briefs || [];
+    var cards = briefs.map(function(b) {
+      var cls = b.priority === 'high' ? 'pill-err' : (b.priority === 'medium' ? 'pill-warn' : 'pill-info');
+      var ev = '';
+      if (b.evidence && !Array.isArray(b.evidence) && Object.keys(b.evidence).length) {
+        ev = '<table style="margin-top:10px"><tbody>' + Object.keys(b.evidence).map(function(k) {
+          return '<tr><td class="muted">' + escapeHtml(k.replace(/_/g, ' ')) + '</td><td class="num">' +
+                 escapeHtml(String(b.evidence[k])) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+      } else if (Array.isArray(b.evidence) && b.evidence.length) {
+        ev = '<table style="margin-top:10px"><thead><tr><th>Platform</th><th class="num">CM / can</th><th class="num">Cans</th></tr></thead><tbody>' +
+          b.evidence.map(function(r) {
+            return '<tr><td>' + escapeHtml(r.platform) + '</td><td class="num">' + inr(r.cm_per_can) +
+                   '</td><td class="num">' + (r.cans || 0) + '</td></tr>';
+          }).join('') + '</tbody></table>';
+      }
+      return '<div class="panel" style="margin-top:12px">' +
+        '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">' +
+          '<div style="font-weight:700;color:var(--nh-navy)">' + escapeHtml(b.title) + '</div>' +
+          '<span class="pill ' + cls + '">' + escapeHtml(b.priority) + '</span>' +
+        '</div>' +
+        '<div style="margin-top:8px;line-height:1.6">' + escapeHtml(b.why) + '</div>' +
+        (b.do_this ? '<div style="margin-top:10px;padding:10px 12px;background:var(--nh-gray-bg);border-radius:8px">' +
+          '<b>Do this:</b> ' + escapeHtml(b.do_this) + '</div>' : '') +
+        ev +
+      '</div>';
+    }).join('');
+
+    el.innerHTML =
+      '<div class="panel"><h2>Creative briefs</h2>' +
+        '<div class="desc">What creative work your own numbers argue for, over the last 30 days. Each brief cites the figure that provoked it — a brief without evidence is just an opinion.</div>' +
+      '</div>' + cards;
+  });
 }
 
 // ---------- Listing Health ----------
