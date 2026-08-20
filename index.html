@@ -266,11 +266,10 @@
       <li data-view="mkt-campaigns"><span class="ico">&#127919;</span> Campaign Manager</li>
       <li data-view="mkt-creative"><span class="ico">&#127912;</span> Creative Lab</li>
       <li data-view="mkt-listing"><span class="ico">&#127978;</span> Listing Health</li>
-      <li data-view="mkt-audience"><span class="ico">&#128101;</span> Audience &amp; Cohorts</li>
+      <li data-view="mkt-audience"><span class="ico">&#128205;</span> City Performance</li>
       <li data-view="mkt-budget"><span class="ico">&#128184;</span> Budget Planner</li>
       <li data-view="mkt-inventory"><span class="ico">&#128230;</span> Inventory Planner</li>
       <li data-view="mkt-pnl"><span class="ico">&#128200;</span> P&amp;L Dashboard</li>
-      <li data-view="mkt-competitor"><span class="ico">&#128269;</span> Competitor Intel</li>
       <li data-view="mkt-expansion"><span class="ico">&#128640;</span> Expansion Tracker</li>
       <li data-view="mkt-alerts"><span class="ico">&#128308;</span> Live Alerts</li>
       <li data-view="mkt-ai-strategy"><span class="ico">&#129504;</span> AI Strategy</li>
@@ -618,9 +617,9 @@ function switchView(v) {
     integrations: 'Integrations',
     issues: 'Issues & Actions', 'import': 'Data Import Center', master: 'Master Data Admin',
     'mkt-overview': 'Marketing Overview', 'mkt-ai': 'Ask Marketing AI', 'mkt-campaigns': 'Campaign Manager',
-    'mkt-creative': 'Creative Lab', 'mkt-listing': 'Listing Health', 'mkt-audience': 'Audience & Cohorts',
+    'mkt-creative': 'Creative Lab', 'mkt-listing': 'Listing Health', 'mkt-audience': 'City Performance',
     'mkt-budget': 'Marketing Budget Planner', 'mkt-inventory': 'Marketing Inventory Planner',
-    'mkt-pnl': 'Marketing P&L Dashboard', 'mkt-competitor': 'Competitor Intel', 'mkt-expansion': 'Marketing Expansion Tracker',
+    'mkt-pnl': 'Marketing P&L Dashboard', 'mkt-expansion': 'Marketing Expansion Tracker',
     'mkt-alerts': 'Live Marketing Alerts', 'mkt-ai-strategy': 'AI Marketing Strategy',
   };
   $('view-title').innerText = titles[v] || v;
@@ -686,7 +685,6 @@ function loadView(v) {
     case 'mkt-budget':      render = renderMktBudget; break;
     case 'mkt-inventory':   render = renderMktInventory; break;
     case 'mkt-pnl':         render = renderMktPnL; break;
-    case 'mkt-competitor':  render = renderMktCompetitor; break;
     case 'mkt-expansion':   render = renderMktExpansion; break;
     case 'mkt-alerts':      render = renderMktAlerts; break;
     case 'mkt-ai-strategy': render = renderMktAIStrategy; break;
@@ -5262,83 +5260,102 @@ function renderMktCreative(el) {
 }
 
 // ---------- Listing Health ----------
+// Measured, not hand-scored. The two numbers the ads portal publishes —
+// click-through and conversion — separate "nobody clicks this" from "people
+// click and then don't buy", and those need opposite fixes. A single
+// subjective content score, which is what this tab used to hold, could never
+// tell you which one you had.
 function renderMktListing(el) {
-  var cfg = {
-    aiKind: 'listing_audit', aiTitle: 'AI listing audit', aiSubtitle: 'Audits your listings against real availability and per-city sales, with a concrete suggested title for each fix.', title: 'Listing Health', tabName: 'listing_health', singular: 'listing check', idField: 'listing_health_id',
-    listAction: 'listingHealth', createAction: 'createListingHealth', deleteAction: 'deleteListingHealth',
-    desc: 'Log periodic listing quality checks per SKU × platform — content score, rating, reviews, image count, open issues.',
-    fields: [
-      { key: 'sku_id', label: 'SKU', type: 'select', required: true, options: mktSkuOptions_() },
-      { key: 'platform_id', label: 'Platform', type: 'select', options: mktPlatformOptions_() },
-      { key: 'date', label: 'Date checked', type: 'date' },
-      { key: 'content_score', label: 'Content score (0–100)', type: 'number' },
-      { key: 'rating', label: 'Rating (0–5)', type: 'number', step: '0.1' },
-      { key: 'review_count', label: 'Review count', type: 'number' },
-      { key: 'image_count', label: 'Image count', type: 'number' },
-      { key: 'issues', label: 'Issues / notes', type: 'textarea' },
-    ],
-    columns: [
-      { key: 'date', label: 'Date' },
-      { key: 'sku_id', label: 'SKU', render: function(r){ return escapeHtml(mktSkuName_(r.sku_id)); } },
-      { key: 'platform_id', label: 'Platform', render: function(r){ return escapeHtml(mktPlatformName_(r.platform_id)); } },
-      { key: 'content_score', label: 'Score', num: true, render: function(r){ return mktScorePill_(r.content_score); } },
-      { key: 'rating', label: 'Rating', num: true },
-      { key: 'review_count', label: 'Reviews', num: true },
-      { key: 'image_count', label: 'Images', num: true },
-      { key: 'issues', label: 'Issues', render: function(r){ var t=(r.issues||'').toString(); return escapeHtml(t.slice(0,80)) + (t.length>80?'…':''); } },
-    ],
-  };
-  return renderMktCrudView_(el, cfg);
+  setLoading(el);
+  return api('listingHealthReport', {}).then(function(d) {
+    var rows = d.rows || [];
+    var b = d.benchmarks || {};
+
+    if (!rows.length) {
+      el.innerHTML =
+        '<div class="panel"><h2>Listing Health</h2>' +
+          '<div class="desc">No listing metrics yet.</div>' +
+          '<div class="alert medium" style="margin-top:12px"><div class="sev">Nothing measured yet</div><div class="msg">' +
+            'This view reads click-through and conversion per SKU from the ads portal. Run the <b>⚡ Sync Swiggy</b> bookmark on the Instamart <b>Ads Dashboard</b> to capture them. ' +
+            'Until then there is nothing to report, and inventing a content score would be worse than an empty page.' +
+          '</div></div>' +
+        '</div>';
+      return;
+    }
+
+    var badge = {
+      both_weak: ['pill-err', 'tile and page both weak'],
+      page_loses_them: ['pill-err', 'page loses them'],
+      not_getting_clicked: ['pill-warn', 'not getting clicked'],
+      ok: ['pill-ok', 'at benchmark'],
+    };
+
+    var cards = rows.map(function(r) {
+      var bd = badge[r.verdict] || ['pill-info', r.verdict];
+      return '<div class="panel" style="margin-top:12px">' +
+        '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">' +
+          '<div><b>' + escapeHtml(r.sku_name) + '</b> <span class="muted">· ' + escapeHtml(r.platform_name) + '</span></div>' +
+          '<span class="pill ' + bd[0] + '">' + escapeHtml(bd[1]) + '</span>' +
+        '</div>' +
+        '<table style="margin-top:10px"><thead><tr><th>Metric</th><th class="num">Yours</th><th class="num">Category</th><th class="num">Gap</th></tr></thead><tbody>' +
+          '<tr><td>Click-through</td><td class="num">' + r.ctr + '%</td><td class="num">' + (b.ctr || '—') + '%</td>' +
+            '<td class="num">' + (b.ctr ? Math.round((r.ctr / b.ctr - 1) * 100) + '%' : '—') + '</td></tr>' +
+          '<tr><td>Conversion</td><td class="num">' + r.cvr + '%</td><td class="num">' + (b.cvr || '—') + '%</td>' +
+            '<td class="num">' + (r.cvr_gap_pct != null ? '−' + r.cvr_gap_pct + '%' : '—') + '</td></tr>' +
+        '</tbody></table>' +
+        '<div style="margin-top:10px;padding:10px 12px;background:var(--nh-gray-bg);border-radius:8px">' +
+          '<b>Fix:</b> ' + escapeHtml(r.fix) + '</div>' +
+        '<div class="muted" style="font-size:11px;margin-top:8px">Observed ' + escapeHtml(r.date) +
+          ' · share of voice ' + r.sov + '% · market share ' + r.market_share + '%</div>' +
+      '</div>';
+    }).join('');
+
+    el.innerHTML =
+      '<div class="panel"><h2>Listing Health</h2>' +
+        '<div class="desc">Click-through says whether the listing gets chosen in search. Conversion says whether the product page closes the sale. They fail for different reasons and need different fixes, so they are judged separately against the category benchmark.</div>' +
+      '</div>' + cards;
+  });
 }
 
-// ---------- Audience & Cohorts ----------
+// ---------- City Performance ----------
+// Was "Audience & Cohorts", which promised segments neither portal publishes;
+// its seeded cohorts were invented. Cities are real, already in daily_sales,
+// and are what expansion decisions actually turn on.
 function renderMktAudience(el) {
-  var cfg = {
-    aiKind: 'audience', aiTitle: 'AI cohort builder', aiSubtitle: 'Derives targetable customer cohorts from real city and SKU purchase patterns.', title: 'Audience & Cohorts', tabName: 'audience_cohorts', singular: 'cohort', idField: 'cohort_id',
-    listAction: 'audienceCohorts', createAction: 'createAudienceCohort', deleteAction: 'deleteAudienceCohort',
-    desc: 'Define and track the customer segments you’re targeting — who they are, roughly how big, and which platform they’re on.',
-    fields: [
-      { key: 'name', label: 'Cohort name', required: true, placeholder: 'e.g. Gym-goers 18–28, Chennai' },
-      { key: 'platform_id', label: 'Platform', type: 'select', options: mktPlatformOptions_() },
-      { key: 'definition', label: 'Definition / targeting criteria', type: 'textarea' },
-      { key: 'size_estimate', label: 'Estimated size', type: 'number' },
-      { key: 'notes', label: 'Notes', type: 'textarea' },
-    ],
-    columns: [
-      { key: 'name', label: 'Name' },
-      { key: 'platform_id', label: 'Platform', render: function(r){ return escapeHtml(mktPlatformName_(r.platform_id)); } },
-      { key: 'definition', label: 'Definition', render: function(r){ var t=(r.definition||'').toString(); return escapeHtml(t.slice(0,100)) + (t.length>100?'…':''); } },
-      { key: 'size_estimate', label: 'Est. size', num: true, render: function(r){ return (Number(r.size_estimate)||0).toLocaleString('en-IN'); } },
-    ],
-  };
-  return renderMktCrudView_(el, cfg);
-}
+  setLoading(el);
+  return api('cityPerformance', { days: 30 }).then(function(d) {
+    var rows = d.rows || [];
+    var un = d.unattributed || {};
 
-// ---------- Competitor Intel ----------
-function renderMktCompetitor(el) {
-  var cfg = {
-    aiKind: 'competitor', aiTitle: 'AI competitive read', aiSubtitle: 'Assesses your position from logged intel and your own pricing — and tells you what to go and observe if intel is thin.', title: 'Competitor Intel', tabName: 'competitor_intel', singular: 'observation', idField: 'intel_id',
-    listAction: 'competitorIntel', createAction: 'createCompetitorIntel', deleteAction: 'deleteCompetitorIntel',
-    desc: 'Log competitor pricing, promos, and moves you observe on Blinkit/Instamart/Zepto — keeps pricing and positioning decisions grounded in reality.',
-    fields: [
-      { key: 'date_observed', label: 'Date observed', type: 'date' },
-      { key: 'competitor_brand', label: 'Competitor brand', required: true, placeholder: 'e.g. Sting, Tzinga, Bailey’s' },
-      { key: 'sku_id', label: 'Comparable to our SKU', type: 'select', options: mktSkuOptions_() },
-      { key: 'platform_id', label: 'Platform', type: 'select', options: mktPlatformOptions_() },
-      { key: 'price', label: 'Price (₹)', type: 'number', step: '0.01' },
-      { key: 'promo', label: 'Promo / offer', placeholder: 'e.g. Buy 2 Get 1' },
-      { key: 'notes', label: 'Notes', type: 'textarea' },
-    ],
-    columns: [
-      { key: 'date_observed', label: 'Date' },
-      { key: 'competitor_brand', label: 'Brand' },
-      { key: 'sku_id', label: 'vs our SKU', render: function(r){ return escapeHtml(mktSkuName_(r.sku_id)); } },
-      { key: 'platform_id', label: 'Platform', render: function(r){ return escapeHtml(mktPlatformName_(r.platform_id)); } },
-      { key: 'price', label: 'Price', num: true, render: function(r){ return inr(r.price); } },
-      { key: 'promo', label: 'Promo' },
-    ],
-  };
-  return renderMktCrudView_(el, cfg);
+    var body = rows.length
+      ? rows.map(function(r) {
+          return '<tr><td>' + escapeHtml(r.city_name) + '</td>' +
+                 '<td class="num">' + r.packs + '</td>' +
+                 '<td class="num">' + inr(r.revenue) + '</td>' +
+                 '<td class="num">' + inr(r.revenue_per_pack) + '</td>' +
+                 '<td>' + escapeHtml(r.top_sku) + '</td>' +
+                 '<td class="num">' + r.sku_count + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="6" class="muted">No city-attributed sales in this window.</td></tr>';
+
+    // Portal-synced days carry no city, so saying so is the difference
+    // between "we sell nothing there" and "we cannot see where we sell".
+    var note = un.packs
+      ? '<div class="alert medium" style="margin-top:12px"><div class="sev">' + un.packs + ' packs not attributed to a city</div><div class="msg">' +
+          inr(un.revenue) + ' of sales came from portal syncs, which report daily totals without a city breakdown. ' +
+          'City detail for those days only arrives with the monthly payout file. The table above therefore understates every city.' +
+        '</div></div>'
+      : '';
+
+    el.innerHTML =
+      '<div class="panel"><h2>City performance — last 30 days</h2>' +
+        '<div class="desc">Where the sales actually are, and what sells there. This is the only cohort either portal exposes — anything finer would be guesswork.</div>' +
+        '<table><thead><tr><th>City</th><th class="num">Packs</th><th class="num">Revenue</th>' +
+        '<th class="num">Revenue / pack</th><th>Best seller</th><th class="num">SKUs sold</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>' +
+        note +
+      '</div>';
+  });
 }
 
 // ---------- Marketing Overview ----------
